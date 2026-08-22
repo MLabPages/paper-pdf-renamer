@@ -7,15 +7,20 @@ from pathlib import Path
 
 VALUE_NAME = "PaperPdfRenamer"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+GUI_ARGUMENTS = "-m paper_pdf_renamer.gui"
 
 
-def _command() -> str:
+def pythonw_executable() -> Path:
     executable = Path(sys.executable)
     if executable.name.casefold() == "python.exe":
         pythonw = executable.with_name("pythonw.exe")
         if pythonw.exists():
             executable = pythonw
-    return f'"{executable}" -m paper_pdf_renamer.gui'
+    return executable
+
+
+def _command() -> str:
+    return f'"{pythonw_executable()}" {GUI_ARGUMENTS}'
 
 
 def is_supported() -> bool:

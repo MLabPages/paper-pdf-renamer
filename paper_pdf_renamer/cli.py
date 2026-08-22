@@ -58,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--once", action="store_true", help="1回だけポーリング")
 
     sub.add_parser("gui", help="最小GUIを起動")
+    shortcut = sub.add_parser("shortcut", help="デスクトップにローカル画面のショートカットを作成")
+    shortcut.add_argument("--path", type=Path, help="ショートカットの保存先（既定はデスクトップ）")
+    shortcut.add_argument("--name", default="論文PDFファイル名整理.lnk")
     sub.add_parser("undo", help="直近の成功したリネームを元に戻す")
     return parser
 
@@ -75,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
             from .gui import main as gui_main
 
             return gui_main()
+        if args.command == "shortcut":
+            from .shortcuts import create_desktop_shortcut
+
+            print(create_desktop_shortcut(shortcut_path=args.path, name=args.name))
+            return 0
 
         service = _make_service(args)
         if args.command == "rename":

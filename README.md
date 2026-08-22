@@ -44,6 +44,9 @@ paper-pdf-renamer undo
 
 # ローカル画面を起動（設定はユーザーのAppDataに保存）
 paper-pdf-renamer gui
+
+# デスクトップに起動ショートカットを作成
+paper-pdf-renamer shortcut
 ```
 
 `scan` は一覧と変更前・変更後をJSONで出力し、`--plan-file` を指定すると保存します。`apply` は `--approve` を指定しない限り何も変更しません。監視開始時点ですでに存在するPDFは初回に自動処理せず、新たに検出したPDFだけを対象にします。
@@ -57,6 +60,8 @@ paper-pdf-renamer gui
 ```
 
 依存なしのローカルWeb画面が `http://127.0.0.1:8765/` で開きます。監視フォルダ（複数可）、監視ON/OFF、タイトル最大長、信頼度基準、処理履歴、保留一覧、候補の確認実行、直近のUndoを操作できます。外部公開サーバーではなく、このPCのループバックアドレスだけで待ち受けます。設定は `%APPDATA%\paper-pdf-renamer\settings.json`、履歴は同フォルダの `history` に保存されます。Windows起動時の自動起動は画面のチェックボックスからHKCUだけを使って切り替えます。
+
+デスクトップショートカットは、現在の`.venv`の`pythonw.exe`で画面を起動します。作り直す場合は`paper-pdf-renamer shortcut`を再実行してください。
 
 ## Python API
 
