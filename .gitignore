@@ -1,0 +1,11 @@
+.venv/
+.uv-cache/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.paper-pdf-renamer/
+.qa-data/
+qa-appdata/
+rename-plan.json
+*.log

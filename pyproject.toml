@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-pdf-renamer"
+version = "0.1.0"
+description = "安全側に倒したローカル論文PDFファイル名整理ツール"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+pdf = ["PyMuPDF>=1.24"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+paper-pdf-renamer = "paper_pdf_renamer.cli:main"
+paper-pdf-renamer-gui = "paper_pdf_renamer.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
