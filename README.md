@@ -59,7 +59,7 @@ paper-pdf-renamer shortcut
 .\.venv\Scripts\python.exe -m paper_pdf_renamer.gui
 ```
 
-依存なしのローカルWeb画面が `http://127.0.0.1:8765/` で開きます。監視フォルダ（複数可）、監視ON/OFF、タイトル最大長、信頼度基準、処理履歴、保留一覧、候補の確認実行、直近のUndoを操作できます。外部公開サーバーではなく、このPCのループバックアドレスだけで待ち受けます。設定は `%APPDATA%\paper-pdf-renamer\settings.json`、履歴は同フォルダの `history` に保存されます。Windows起動時の自動起動は画面のチェックボックスからHKCUだけを使って切り替えます。
+依存なしのローカルWeb画面が `http://127.0.0.1:8765/` で開きます。監視フォルダ（複数可）は入力欄に書くほか、`フォルダを選択…` からWindows標準のフォルダー選択画面で追加できます。監視ON/OFF、タイトル最大長、信頼度基準、処理履歴、保留一覧、候補の確認実行、直近のUndoを操作できます。外部公開サーバーではなく、このPCのループバックアドレスだけで待ち受けます。設定は `%APPDATA%\paper-pdf-renamer\settings.json`、履歴は同フォルダの `history` に保存されます。Windows起動時の自動起動は画面のチェックボックスからHKCUだけを使って切り替えます。
 
 デスクトップショートカットは、現在の`.venv`の`pythonw.exe`で画面を起動します。作り直す場合は`paper-pdf-renamer shortcut`を再実行してください。
 

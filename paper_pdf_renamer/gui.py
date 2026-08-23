@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import os
+import subprocess
 import threading
 import webbrowser
 from http import HTTPStatus
@@ -48,6 +52,59 @@ def _candidate_json(candidate_id: str, candidate: RenameCandidate) -> dict[str, 
     value["status_label"] = STATUS_LABELS.get(candidate.status, candidate.status)
     value["reason_text"] = _reason_text(candidate.reasons)
     return value
+
+
+def select_windows_folder() -> str | None:
+    """Open the native Windows folder picker without sending PDF contents anywhere."""
+    if os.name != "nt":
+        raise OSError("フォルダ選択はWindowsで利用できます")
+
+    script = r"""
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '監視対象フォルダを選択してください'
+$dialog.ShowNewFolderButton = $false
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($dialog.SelectedPath)))
+}
+"""
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    try:
+        completed = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Sta",
+                "-WindowStyle",
+                "Hidden",
+                "-EncodedCommand",
+                encoded,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except FileNotFoundError as exc:
+        raise OSError("PowerShellを起動できませんでした") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise OSError("フォルダ選択がタイムアウトしました") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        raise OSError(detail or "フォルダ選択に失敗しました") from exc
+
+    result = completed.stdout.strip()
+    if not result:
+        return None
+    try:
+        selected = base64.b64decode(result, validate=True).decode("utf-8").strip()
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise OSError("フォルダ選択結果を読み取れませんでした") from exc
+    return selected or None
 
 
 class AppState:
@@ -227,6 +284,7 @@ label { display: block; font-size: .86rem; font-weight: 600; margin: 10px 0 5px;
 input, textarea, button { font: inherit; }
 input[type=text], input[type=number], textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px; background: #fff; }
 textarea { min-height: 90px; resize: vertical; }
+.folder-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
 input[readonly] { background: #f1f5f9; }
 .inline { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
 .inline label { margin: 0; }
@@ -257,6 +315,7 @@ tr:last-child td { border-bottom: 0; }
 <div class="inline"><input id="monitor" type="checkbox"><label for="monitor">自動監視 ON</label></div>
 <label for="folders">監視対象フォルダ（1行1フォルダ）</label>
 <textarea id="folders" spellcheck="false"></textarea>
+<div class="folder-actions"><button id="choose-folder" class="secondary" type="button">フォルダを選択…</button></div>
 <div class="inline"><input id="recursive" type="checkbox"><label for="recursive">サブフォルダも監視</label></div>
 <label>ファイル名形式</label><input id="format" readonly>
 <label for="max-title">タイトル最大長</label><input id="max-title" type="number" min="10" max="200">
@@ -279,12 +338,19 @@ tr:last-child td { border-bottom: 0; }
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
+let settingsDirty = false;
+let lastServerSettings = null;
 async function api(url, options={}) { const response = await fetch(url, {headers:{"Content-Type":"application/json"}, ...options}); const data = await response.json(); if (!response.ok) throw new Error(data.error || "通信に失敗しました"); return data; }
 function cell(row, value, className="") { const td = document.createElement("td"); td.textContent = value ?? "—"; if (className) td.className = className; row.appendChild(td); return td; }
+function formSettingsSnapshot() { return {folders:$("folders").value,recursive:$("recursive").checked,format:$("format").value,maxTitle:$("max-title").value,confidence:$("confidence").value,mailto:$("mailto").value,autoStart:$("auto-start").checked}; }
 function render(state) {
   const s = state.settings;
-  $("folders").value = s.watch_folders.join("\n"); $("recursive").checked = s.recursive; $("format").value = s.format_template;
-  $("max-title").value = s.max_title_length; $("confidence").value = Number(s.min_confidence).toFixed(2); $("mailto").value = s.mailto || ""; $("auto-start").checked = s.auto_start;
+  const userChanged = settingsDirty || (lastServerSettings !== null && JSON.stringify(formSettingsSnapshot()) !== JSON.stringify(lastServerSettings));
+  if (!userChanged) {
+    $("folders").value = s.watch_folders.join("\n"); $("recursive").checked = s.recursive; $("format").value = s.format_template;
+    $("max-title").value = s.max_title_length; $("confidence").value = Number(s.min_confidence).toFixed(2); $("mailto").value = s.mailto || ""; $("auto-start").checked = s.auto_start;
+  }
+  lastServerSettings = {folders:s.watch_folders.join("\n"),recursive:s.recursive,format:s.format_template,maxTitle:String(s.max_title_length),confidence:Number(s.min_confidence).toFixed(2),mailto:s.mailto || "",autoStart:s.auto_start};
   $("monitor").checked = state.monitoring;
   const badge = $("monitor-badge"); badge.textContent = state.monitoring ? "監視中" : "停止中"; badge.className = state.monitoring ? "badge on" : "badge";
   $("message").textContent = state.message || "";
@@ -296,12 +362,14 @@ function render(state) {
   for (const item of state.history.slice().reverse()) { const row = history.insertRow(); cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename); cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title); cell(row, `${Math.round(Number(item.confidence || 0) * 100)}%`); }
 }
 async function refresh() { try { render(await api("/api/state")); } catch (error) { $("local-status").textContent = error.message; } }
-async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked})}); if (refreshNow) await refresh(); }
+async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked})}); settingsDirty = false; lastServerSettings = null; if (refreshNow) await refresh(); }
 $("save").onclick = async () => { try { await saveSettings(); $("local-status").textContent = "設定を保存しました"; } catch (error) { $("local-status").textContent = error.message; } };
 $("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("scan").onclick = async () => { try { $("local-status").textContent = "スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/scan", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("apply").onclick = async () => { const ids = [...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id); if (!ids.length) { $("local-status").textContent = "実行する候補を選択してください"; return; } if (!confirm(`${ids.length}件を確認済みとしてリネームしますか？`)) return; try { const result = await api("/api/apply", {method:"POST", body:JSON.stringify({ids})}); $("local-status").textContent = `${result.count}件を変更しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("undo").onclick = async () => { if (!confirm("直近の成功したリネームを元に戻しますか？")) return; try { const result = await api("/api/undo", {method:"POST", body:"{}"}); $("local-status").textContent = result.result.status === "undone" ? "直近のリネームを元に戻しました" : "Undoできる履歴がありません"; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
+$("choose-folder").onclick = async () => { try { $("local-status").textContent = "フォルダ選択ダイアログを開いています…"; const result = await api("/api/select-folder", {method:"POST", body:"{}"}); if (!result.path) { $("local-status").textContent = "フォルダ選択をキャンセルしました"; return; } const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); if (!folders.some((folder) => folder.toLowerCase() === result.path.toLowerCase())) folders.push(result.path); $("folders").value = folders.join("\n"); settingsDirty = true; $("local-status").textContent = "フォルダを追加しました。設定を保存してください"; } catch (error) { $("local-status").textContent = error.message; } };
+for (const id of ["folders", "recursive", "max-title", "confidence", "mailto", "auto-start"]) { $(id).addEventListener("input", () => { settingsDirty = true; }); $(id).addEventListener("change", () => { settingsDirty = true; }); }
 refresh(); setInterval(refresh, 2000);
 </script>
 </body>
@@ -368,6 +436,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"count": self.state.apply([str(item) for item in ids])}
             elif path == "/api/undo":
                 result = {"result": self.state.undo()}
+            elif path == "/api/select-folder":
+                result = {"path": select_windows_folder()}
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
