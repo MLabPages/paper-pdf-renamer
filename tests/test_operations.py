@@ -2,7 +2,7 @@ from pathlib import Path
 
 from paper_pdf_renamer.history import HistoryLog
 from paper_pdf_renamer.models import ResolvedMetadata
-from paper_pdf_renamer.operations import BatchScanner, PollingWatcher, RenameService
+from paper_pdf_renamer.operations import BatchScanner, PollingWatcher, RenameService, metadata_from_history
 from paper_pdf_renamer.undo import undo_last
 
 
@@ -32,6 +32,25 @@ def test_low_confidence_is_not_renamed(tmp_path: Path):
     result = RenameService(lambda path: held).process(source)
     assert result.status == "held"
     assert source.exists()
+
+
+def test_history_metadata_can_create_candidate_for_new_format(tmp_path: Path):
+    source = tmp_path / "download.pdf"
+    source.write_bytes(b"pdf")
+    history = HistoryLog(tmp_path / "logs")
+    original = RenameService(lambda path: good_metadata(), history=history)
+    renamed = original.process(source)
+    assert renamed.status == "renamed"
+
+    record = history.latest_successful_renames()[0]
+    restored = metadata_from_history(record)
+    assert restored is not None
+    updated = RenameService(
+        lambda path: good_metadata(),
+        format_template="{author} ({year}). - {title}.pdf",
+    ).make_candidate_from_metadata(renamed.destination_path, restored)
+    assert updated.status == "ready"
+    assert updated.destination_path and updated.destination_path.name == "Schmitt (1999). - A Safe Paper.pdf"
 
 
 def test_batch_scan_is_preview_only_until_explicit_approval(tmp_path: Path):

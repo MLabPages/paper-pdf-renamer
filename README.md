@@ -11,6 +11,7 @@ Google Scholar、出版社、ResearchGate、大学リポジトリなどから保
 - 同名ファイルは `(2)` のように連番にし、上書きしません。
 - 一括処理は `scan` でJSONプランを作成し、`apply` で明示承認した元パスだけを実行します。
 - 成功したリネームはJSONLとCSVに記録し、`undo` で直近の成功分を戻せます。
+- 履歴には書誌情報も保存するため、ファイル名形式を変更した後も、PDFを再解析せずに「履歴から再整理」できます。
 
 ## セットアップ
 
@@ -20,6 +21,15 @@ Google Scholar、出版社、ResearchGate、大学リポジトリなどから保
 py -m pip install -e .
 py -m pip install -e ".[pdf]"
 ```
+
+Windows版EXEを作る場合は、次のコマンドを使います。PyInstallerでローカルEXEを作るため、起動中に`python`とは表示されず、独自アイコンと「論文PDFファイル名整理」という名前になります。
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\packaging\windows\build_windows.ps1
+PowerShell -ExecutionPolicy Bypass -File .\packaging\windows\install_windows.ps1
+```
+
+`install_windows.ps1`は管理者権限を使わず、`%LOCALAPPDATA%\Programs\PaperPdfRenamer`へ配置し、デスクトップとWindowsのスタートメニューにショートカットを作ります。設定・履歴は従来どおり`%APPDATA%\paper-pdf-renamer`を使うため、Python版からWindows版へ移行しても履歴は引き継がれます。
 
 ## CLI例
 
@@ -59,17 +69,18 @@ paper-pdf-renamer shortcut
 .\.venv\Scripts\python.exe -m paper_pdf_renamer.gui
 ```
 
-依存なしのローカルWeb画面が `http://127.0.0.1:8766/` で開きます。監視フォルダ（複数可）は入力欄に書くほか、`フォルダを選択…` からWindows標準のフォルダー選択画面で追加できます。監視ON/OFF、タイトル最大長、信頼度基準、処理履歴、保留一覧、候補の確認実行、直近のUndoを操作できます。外部公開サーバーではなく、このPCのループバックアドレスだけで待ち受けます。設定は `%APPDATA%\paper-pdf-renamer\settings.json`、履歴は同フォルダの `history` に保存されます。Windows起動時の自動起動は画面のチェックボックスからHKCUだけを使って切り替えます。
+依存なしのローカルWeb画面が `http://127.0.0.1:8766/` で開きます。ポートが使用中の場合は、8767以降の空きポートへ自動的に切り替えます。監視フォルダ（複数可）は入力欄に書くほか、`フォルダを選択…` からWindows標準のフォルダー選択画面で追加できます。監視ON/OFF、タイトル最大長、信頼度基準、処理履歴、保留一覧、候補の確認実行、直近のUndoを操作できます。外部公開サーバーではなく、このPCのループバックアドレスだけで待ち受けます。設定は `%APPDATA%\paper-pdf-renamer\settings.json`、履歴は同フォルダの `history` に保存されます。Windows起動時の自動起動は画面のチェックボックスからHKCUだけを使って切り替えます。
 
 ### 画面での操作順
 
 - 新しいPDFを自動処理する場合：`フォルダを選択…` → `設定を保存（必須）` → `新しいPDFを自動監視`をON。監視開始前から存在するPDFは自動変更しません。
 - 既存PDFを整理する場合：`フォルダを選択…` → `設定を保存（必須）` → `既存PDFをスキャン（変更なし）` → 状態が「候補」の行を確認・選択 → `チェックした候補をリネーム`。
+- このソフトで過去に変更したPDFの形式を直す場合：新しい`ファイル名形式`を保存 → `履歴から再整理（変更なし）` → 変更前後を確認・選択 → `チェックした候補をリネーム`。履歴に保存済みのDOI・タイトル・著者・年を使うため、PDF本体を外部へ送らず、再解析もしません。
 - 「要確認」「失敗」の行は自動では変更しません。元のファイル名を残したまま、理由を確認してください。
 - PDFにDOIが直接書かれていない場合も、1ページ目の折り返しタイトルと著者を復元してCrossrefのタイトル検索を試みます。著者の所属番号や`et al.`は照合時に除外します。
 - `ファイル名形式`には`{author}`、`{year}`、`{title}`、`{doi}`を使えます。例：`{author} ({year}). - {title}.pdf`。`.pdf`を省略した場合は自動で追加されます。
 
-デスクトップショートカットは、現在の`.venv`の`pythonw.exe`で画面を起動します。作り直す場合は`paper-pdf-renamer shortcut`を再実行してください。
+Python版のデスクトップショートカットは、現在の`.venv`の`pythonw.exe`で画面を起動します。Windows版EXEを使う場合は、上記の`install_windows.ps1`で作成したショートカットを使ってください。
 
 ## Python API
 

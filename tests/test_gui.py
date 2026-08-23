@@ -1,9 +1,12 @@
 import base64
 import inspect
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from paper_pdf_renamer.gui import run_server, select_windows_folder
+from paper_pdf_renamer.config import Settings
+from paper_pdf_renamer.gui import AppState, run_server, select_windows_folder
+from paper_pdf_renamer.history import HistoryLog
 
 
 def test_gui_uses_port_separate_from_translator() -> None:
@@ -38,3 +41,35 @@ def test_select_windows_folder_cancel_returns_none() -> None:
         ),
     ):
         assert select_windows_folder() is None
+
+
+def test_gui_reformats_pdf_from_saved_history(tmp_path: Path) -> None:
+    current = tmp_path / "Schmitt et al._1999_A Safe Paper.pdf"
+    current.write_bytes(b"pdf")
+    settings = Settings(
+        watch_folders=[str(tmp_path)],
+        history_dir=str(tmp_path / "logs"),
+        format_template="{author} ({year}). - {title}.pdf",
+    ).validate()
+    HistoryLog(settings.history_dir).append({
+        "action": "rename",
+        "status": "renamed",
+        "original_filename": "download.pdf",
+        "new_filename": current.name,
+        "original_path": str(tmp_path / "download.pdf"),
+        "new_path": str(current),
+        "doi": "10.1234/example",
+        "title": "A Safe Paper",
+        "first_author": "Schmitt",
+        "authors": ["Schmitt", "Lemon"],
+        "year": 1999,
+        "language": "en",
+        "metadata_source": "crossref:doi",
+        "confidence": 0.99,
+    })
+
+    state = AppState(settings)
+    assert state.reformat_history() == 1
+    candidate = state.snapshot()["candidates"][0]
+    assert candidate["status"] == "ready"
+    assert candidate["destination_path"].endswith("Schmitt et al. (1999). - A Safe Paper.pdf")

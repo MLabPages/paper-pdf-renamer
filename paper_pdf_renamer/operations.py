@@ -4,7 +4,7 @@ import json
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from .config import FORMAT_TEMPLATE, validate_format_template
 from .filename import build_filename
@@ -20,11 +20,67 @@ def _metadata_log(metadata: ResolvedMetadata) -> dict[str, object]:
         "doi": metadata.doi,
         "title": metadata.title,
         "first_author": metadata.first_author,
+        "authors": metadata.authors,
         "year": metadata.year,
+        "language": metadata.language,
         "metadata_source": metadata.source,
         "confidence": metadata.confidence,
         "reasons": metadata.reasons,
+        "paper_type": metadata.paper_type,
     }
+
+
+def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
+    """履歴に保存した書誌情報から、再整理用のメタデータを復元する。
+
+    古い履歴には著者配列と言語がないため、当時のファイル名に含まれる
+    ``et al.`` / ``ほか`` も補助的に使う。情報が足りない履歴は無理に
+    推測せず、再整理候補にしない。
+    """
+
+    title = str(record.get("title") or "").strip()
+    first_author = str(record.get("first_author") or "").strip()
+    if not title or not first_author:
+        return None
+    try:
+        year = int(record.get("year"))
+    except (TypeError, ValueError):
+        return None
+    try:
+        confidence = float(record.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    raw_authors = record.get("authors")
+    authors = tuple(str(value).strip() for value in raw_authors if str(value).strip()) if isinstance(raw_authors, (list, tuple)) else ()
+    old_names = " ".join(str(record.get(key) or "") for key in ("original_filename", "new_filename"))
+    language = str(record.get("language") or "").strip() or None
+    if not authors:
+        multiple = " et al." in old_names.casefold() or "ほか" in old_names
+        authors = (first_author, "履歴上の著者") if multiple else (first_author,)
+        if language is None and "ほか" in old_names:
+            language = "ja"
+    if not authors:
+        return None
+
+    reasons_value = record.get("reasons")
+    if isinstance(reasons_value, str):
+        reasons = tuple(value.strip() for value in reasons_value.split(";") if value.strip())
+    elif isinstance(reasons_value, (list, tuple)):
+        reasons = tuple(str(value) for value in reasons_value if str(value).strip())
+    else:
+        reasons = ()
+    return ResolvedMetadata(
+        doi=str(record.get("doi") or "").strip() or None,
+        title=title,
+        authors=authors,
+        year=year,
+        language=language,
+        source=str(record.get("metadata_source") or "history"),
+        confidence=confidence,
+        reasons=reasons,
+        paper_type=str(record.get("paper_type") or "") or None,
+    )
 
 
 class RenameService:
@@ -53,6 +109,12 @@ class RenameService:
                 reasons=(f"metadata-extraction-failed:{type(exc).__name__}",),
             )
             return RenameCandidate(source, None, metadata, "failed", list(metadata.reasons))
+        return self.make_candidate_from_metadata(source, metadata)
+
+    def make_candidate_from_metadata(self, path: str | Path, metadata: ResolvedMetadata) -> RenameCandidate:
+        """既存の検証済みメタデータだけで再整理候補を作る。"""
+
+        source = Path(path)
         reasons = list(metadata.reasons)
         if metadata.confidence < self.min_confidence and "low-confidence" not in reasons:
             reasons.append("low-confidence")

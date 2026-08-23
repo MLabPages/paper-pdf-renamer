@@ -13,6 +13,7 @@ dependencies = []
 [project.optional-dependencies]
 pdf = ["PyMuPDF>=1.24"]
 dev = ["pytest>=8"]
+windows = ["pyinstaller>=6.0"]
 
 [project.scripts]
 paper-pdf-renamer = "paper_pdf_renamer.cli:main"

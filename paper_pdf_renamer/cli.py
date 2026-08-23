@@ -64,6 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
     shortcut = sub.add_parser("shortcut", help="デスクトップにローカル画面のショートカットを作成")
     shortcut.add_argument("--path", type=Path, help="ショートカットの保存先（既定はデスクトップ）")
     shortcut.add_argument("--name", default="論文PDFファイル名整理.lnk")
+    shortcut.add_argument("--executable", type=Path, help="パッケージ済みWindows EXEをショートカット先にする")
+    shortcut.add_argument("--desktop", action="store_true", help="パッケージ済みEXEをデスクトップにも登録")
+    shortcut.add_argument("--start-menu", action="store_true", help="パッケージ済みEXEをスタートメニューに登録")
     sub.add_parser("undo", help="直近の成功したリネームを元に戻す")
     return parser
 
@@ -82,9 +85,19 @@ def main(argv: list[str] | None = None) -> int:
 
             return gui_main()
         if args.command == "shortcut":
-            from .shortcuts import create_desktop_shortcut
+            from .shortcuts import create_app_shortcuts, create_desktop_shortcut
 
-            print(create_desktop_shortcut(shortcut_path=args.path, name=args.name))
+            if args.executable:
+                paths = create_app_shortcuts(
+                    args.executable,
+                    desktop=args.desktop or not args.start_menu,
+                    start_menu=args.start_menu,
+                    name=args.name,
+                )
+                for path in paths:
+                    print(path)
+            else:
+                print(create_desktop_shortcut(shortcut_path=args.path, name=args.name))
             return 0
 
         service = _make_service(args)

@@ -9,3 +9,7 @@ __pycache__/
 qa-appdata/
 rename-plan.json
 *.log
+/dist/
+/.pyinstaller-build/
+/packaging/windows/spec/
+/packaging/windows/paper-pdf-renamer.ico
