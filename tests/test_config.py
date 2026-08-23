@@ -19,3 +19,8 @@ def test_settings_round_trip_and_safe_bounds(tmp_path: Path):
     assert loaded.max_title_length == 200
     assert loaded.min_confidence == 0.90
     assert loaded.poll_interval == 60.0
+
+
+def test_legacy_format_template_is_migrated():
+    settings = Settings(format_template="著者_出版年_論文タイトル.pdf").validate()
+    assert settings.format_template == FORMAT_TEMPLATE

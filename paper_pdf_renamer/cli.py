@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .config import FORMAT_TEMPLATE
 from .crossref import CrossrefClient, resolve_metadata
 from .history import HistoryLog
 from .operations import BatchScanner, PollingWatcher, RenameService, default_resolver
@@ -24,6 +25,7 @@ def _make_service(args: argparse.Namespace) -> RenameService:
         history=HistoryLog(args.history_dir),
         min_confidence=args.min_confidence,
         max_title_length=args.max_title_length,
+        format_template=args.format_template,
     )
 
 
@@ -32,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--history-dir", default=".paper-pdf-renamer", help="JSON/CSV履歴の保存先")
     parser.add_argument("--min-confidence", type=float, default=0.90)
     parser.add_argument("--max-title-length", type=int, default=100)
+    parser.add_argument("--format-template", default=FORMAT_TEMPLATE, help="ファイル名形式（{author} {year} {title} {doi}を使用可能）")
     parser.add_argument("--mailto", help="CrossrefのUser-Agentに付ける連絡先（任意）")
     sub = parser.add_subparsers(dest="command", required=True)
 

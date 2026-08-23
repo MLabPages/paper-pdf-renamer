@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .config import FORMAT_TEMPLATE, validate_format_template
 from .filename import build_filename
 from .history import HistoryLog
 from .models import RenameCandidate, ResolvedMetadata
@@ -33,11 +34,13 @@ class RenameService:
         history: HistoryLog | None = None,
         min_confidence: float = 0.90,
         max_title_length: int = 100,
+        format_template: str = FORMAT_TEMPLATE,
     ):
         self.resolver = resolver
         self.history = history
         self.min_confidence = min_confidence
         self.max_title_length = max_title_length
+        self.format_template = validate_format_template(format_template)
 
     def make_candidate(self, path: str | Path) -> RenameCandidate:
         source = Path(path)
@@ -56,7 +59,10 @@ class RenameService:
         if reasons or not metadata.safe_to_rename:
             return RenameCandidate(source, None, metadata, "held", list(dict.fromkeys(reasons)))
         try:
-            destination = build_filename(metadata, source=source, max_title_length=self.max_title_length)
+            destination = build_filename(
+                metadata, source=source, max_title_length=self.max_title_length,
+                format_template=self.format_template,
+            )
         except Exception as exc:
             return RenameCandidate(source, None, metadata, "held", [f"filename-generation-failed:{type(exc).__name__}"])
         if destination.resolve() == source.resolve():
@@ -73,14 +79,15 @@ class RenameService:
             self._log(updated, "rename")
             return updated
         destination = build_filename(
-            candidate.metadata, directory=source.parent, source=source, max_title_length=self.max_title_length
+            candidate.metadata, directory=source.parent, source=source,
+            max_title_length=self.max_title_length, format_template=self.format_template,
         )
         try:
             # Path.renameは既存先への上書きを避けるため、事前に再確認する。
             if destination.exists() and destination.resolve() != source.resolve():
                 destination = build_filename(
                     candidate.metadata, directory=source.parent, source=source,
-                    max_title_length=self.max_title_length,
+                    max_title_length=self.max_title_length, format_template=self.format_template,
                 )
             if destination.exists() and destination.resolve() != source.resolve():
                 raise FileExistsError(str(destination))

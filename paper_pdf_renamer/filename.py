@@ -4,6 +4,7 @@ import re
 import unicodedata
 from pathlib import Path
 
+from .config import FORMAT_TEMPLATE, validate_format_template
 from .models import ResolvedMetadata
 
 INVALID_WINDOWS = re.compile(r"[\\/:*?\"<>|]")
@@ -72,11 +73,13 @@ def build_filename(
     max_title_length: int = 100,
     source: Path | None = None,
     max_path_length: int = 260,
+    format_template: str = FORMAT_TEMPLATE,
 ) -> Path:
     if not metadata.title or not metadata.first_author or not metadata.year:
         raise ValueError("著者・出版年・タイトルが揃っていません")
     if max_title_length < 10:
         raise ValueError("タイトル最大長は10以上にしてください")
+    format_template = validate_format_template(format_template)
     language = (metadata.language or "en").casefold()  # 不確かな場合は安全側に英語形式
     suffix = "ほか" if language.startswith("ja") and len(metadata.authors) >= 2 else "et al." if len(metadata.authors) >= 2 else ""
     author = _author_label(metadata.first_author)
@@ -84,9 +87,24 @@ def build_filename(
         author = f"{author}{suffix}" if suffix == "ほか" else f"{author} {suffix}"
     year = str(metadata.year)
     directory_path = Path(directory) if directory else (source.parent if source else Path.cwd())
-    fixed_length = len(author) + 1 + len(year) + 1 + len(".pdf")
-    allowed_title_length = min(max_title_length, max(10, max_path_length - len(str(directory_path)) - fixed_length - 1))
-    title = _truncate_title(metadata.title, allowed_title_length)
-    filename = sanitize_component(f"{author}_{year}_{title}") + ".pdf"
+    values = {
+        "author": author,
+        "first_author": _author_label(metadata.first_author),
+        "year": year,
+        "doi": metadata.doi or "",
+    }
+    title_limit = min(max_title_length, max(10, len(sanitize_component(metadata.title))))
+    filename = ""
+    for current_limit in range(title_limit, 9, -1):
+        title = _truncate_title(metadata.title, current_limit)
+        try:
+            rendered = format_template.format(title=title, **values).strip()
+        except (IndexError, KeyError, ValueError) as exc:
+            raise ValueError(f"ファイル名形式を展開できません: {exc}") from exc
+        if not rendered.casefold().endswith(".pdf"):
+            rendered += ".pdf"
+        filename = sanitize_component(rendered)
+        if len(str(directory_path / filename)) <= max_path_length:
+            break
     destination = directory_path / filename
     return unique_destination(destination, source=source)

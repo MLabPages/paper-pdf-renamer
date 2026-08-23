@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from .config import FORMAT_TEMPLATE, Settings
+from .config import Settings, validate_format_template
 from .crossref import CrossrefClient, resolve_metadata
 from .history import HistoryLog
 from .models import RenameCandidate
@@ -124,6 +124,7 @@ class AppState:
             history=self.history,
             min_confidence=self.settings.min_confidence,
             max_title_length=self.settings.max_title_length,
+            format_template=self.settings.format_template,
         )
 
     def _upsert(self, candidate: RenameCandidate) -> None:
@@ -141,7 +142,7 @@ class AppState:
                     "watch_folders": self.settings.watch_folders,
                     "monitor_enabled": self.settings.monitor_enabled,
                     "recursive": self.settings.recursive,
-                    "format_template": FORMAT_TEMPLATE,
+                    "format_template": self.settings.format_template,
                     "max_title_length": self.settings.max_title_length,
                     "min_confidence": self.settings.min_confidence,
                     "mailto": self.settings.mailto,
@@ -160,6 +161,7 @@ class AppState:
                 raise ValueError("watch_foldersは配列で指定してください")
             self.settings.watch_folders = [str(Path(str(folder)).expanduser()) for folder in folders if str(folder).strip()]
             self.settings.recursive = bool(payload.get("recursive", self.settings.recursive))
+            self.settings.format_template = validate_format_template(str(payload.get("format_template", self.settings.format_template)))
             self.settings.max_title_length = int(payload.get("max_title_length", self.settings.max_title_length))
             self.settings.min_confidence = float(payload.get("min_confidence", self.settings.min_confidence))
             self.settings.mailto = str(payload.get("mailto", self.settings.mailto)).strip()
@@ -329,7 +331,8 @@ tr:last-child td { border-bottom: 0; }
 <div class="folder-actions"><button id="choose-folder" class="secondary" type="button">フォルダを選択…</button></div>
 <p class="help">フォルダを選んだ後、必ず「設定を保存」を押してください。</p>
 <div class="inline"><input id="recursive" type="checkbox"><label for="recursive">サブフォルダも監視</label></div>
-<label>ファイル名形式</label><input id="format" readonly>
+<label for="format">ファイル名形式</label><input id="format" type="text" spellcheck="false">
+<p class="help">使用項目：<code>{author}</code>、<code>{year}</code>、<code>{title}</code>、<code>{doi}</code>。例：<code>{author} ({year}). - {title}.pdf</code></p>
 <label for="max-title">タイトル最大長</label><input id="max-title" type="number" min="10" max="200">
 <label for="confidence">自動変更の信頼度基準（0.90以上）</label><input id="confidence" type="number" min="0.90" max="1" step="0.01">
 <label for="mailto">Crossref連絡先（任意）</label><input id="mailto" type="text" placeholder="your-name@example.com">
@@ -375,14 +378,14 @@ function render(state) {
   for (const item of state.history.slice().reverse()) { const row = history.insertRow(); cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename); cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title); cell(row, `${Math.round(Number(item.confidence || 0) * 100)}%`); }
 }
 async function refresh() { try { render(await api("/api/state")); } catch (error) { $("local-status").textContent = error.message; } }
-async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked})}); settingsDirty = false; lastServerSettings = null; if (refreshNow) await refresh(); }
+async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,format_template:$("format").value,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked})}); settingsDirty = false; lastServerSettings = null; if (refreshNow) await refresh(); }
 $("save").onclick = async () => { try { await saveSettings(); $("local-status").textContent = "設定を保存しました"; } catch (error) { $("local-status").textContent = error.message; } };
 $("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); const result = await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); $("local-status").textContent = result.message || (enabled ? "新しいPDFの自動監視を開始しました" : "自動監視を停止しました"); } catch (error) { $("local-status").textContent = error.message; } };
 $("scan").onclick = async () => { try { $("local-status").textContent = "スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/scan", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("apply").onclick = async () => { const ids = [...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id); if (!ids.length) { $("local-status").textContent = "実行する候補を選択してください"; return; } if (!confirm(`${ids.length}件を確認済みとしてリネームしますか？`)) return; try { const result = await api("/api/apply", {method:"POST", body:JSON.stringify({ids})}); $("local-status").textContent = result.count ? `${result.count}件をリネームしました` : "実行可能な候補がありません。状態が「候補」の行を選択してください"; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("undo").onclick = async () => { if (!confirm("直近の成功したリネームを元に戻しますか？")) return; try { const result = await api("/api/undo", {method:"POST", body:"{}"}); $("local-status").textContent = result.result.status === "undone" ? "直近のリネームを元に戻しました" : "Undoできる履歴がありません"; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("choose-folder").onclick = async () => { try { $("local-status").textContent = "フォルダ選択ダイアログを開いています…"; const result = await api("/api/select-folder", {method:"POST", body:"{}"}); if (!result.path) { $("local-status").textContent = "フォルダ選択をキャンセルしました"; return; } const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); if (!folders.some((folder) => folder.toLowerCase() === result.path.toLowerCase())) folders.push(result.path); $("folders").value = folders.join("\n"); settingsDirty = true; $("local-status").textContent = "フォルダを追加しました。設定を保存してください"; } catch (error) { $("local-status").textContent = error.message; } };
-for (const id of ["folders", "recursive", "max-title", "confidence", "mailto", "auto-start"]) { $(id).addEventListener("input", () => { settingsDirty = true; }); $(id).addEventListener("change", () => { settingsDirty = true; }); }
+for (const id of ["folders", "recursive", "format", "max-title", "confidence", "mailto", "auto-start"]) { $(id).addEventListener("input", () => { settingsDirty = true; }); $(id).addEventListener("change", () => { settingsDirty = true; }); }
 refresh(); setInterval(refresh, 2000);
 </script>
 </body>

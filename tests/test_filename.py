@@ -25,6 +25,20 @@ def test_author_label_uses_family_name(tmp_path: Path):
     assert build_filename(metadata(authors=("Lemon, Katherine", "Kumar, V.")), tmp_path).name.startswith("Lemon et al._2016_")
 
 
+def test_custom_format_template(tmp_path: Path):
+    result = build_filename(
+        metadata(),
+        tmp_path,
+        format_template="{author} ({year}). - {title}.pdf",
+    )
+    assert result.name == "Lemon et al. (2016). - Understanding Customer Experience.pdf"
+
+
+def test_custom_format_template_adds_pdf_extension(tmp_path: Path):
+    result = build_filename(metadata(), tmp_path, format_template="{author} ({year}) - {title}")
+    assert result.name.endswith(".pdf")
+
+
 def test_duplicate_does_not_overwrite(tmp_path: Path):
     first = build_filename(metadata(), tmp_path)
     first.touch()

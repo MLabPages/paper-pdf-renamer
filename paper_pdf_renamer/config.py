@@ -4,10 +4,51 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from string import Formatter
 
 
 APP_NAME = "paper-pdf-renamer"
-FORMAT_TEMPLATE = "著者_出版年_論文タイトル.pdf"
+FORMAT_TEMPLATE = "{author}_{year}_{title}.pdf"
+LEGACY_FORMAT_TEMPLATE = "著者_出版年_論文タイトル.pdf"
+FORMAT_FIELDS = frozenset({"author", "first_author", "year", "title", "doi"})
+
+
+def validate_format_template(value: str) -> str:
+    """Validate a user-editable filename template and return its trimmed form."""
+    template = str(value).strip()
+    if template == LEGACY_FORMAT_TEMPLATE:
+        return FORMAT_TEMPLATE
+    if not template:
+        raise ValueError("ファイル名形式を入力してください")
+
+    fields: set[str] = set()
+    try:
+        parsed = Formatter().parse(template)
+        for _, field_name, format_spec, conversion in parsed:
+            if field_name is None:
+                continue
+            field = field_name.split(".", 1)[0].split("[", 1)[0]
+            if field not in FORMAT_FIELDS:
+                raise ValueError(f"未対応の項目です: {{{field}}}")
+            if format_spec or conversion:
+                raise ValueError(f"項目の書式指定には対応していません: {{{field}}}")
+            fields.add(field)
+    except ValueError:
+        raise
+
+    missing = {"author", "year", "title"} - fields
+    if missing:
+        names = ", ".join(f"{{{field}}}" for field in sorted(missing))
+        raise ValueError(f"必須項目がありません: {names}")
+    return template
+
+
+def safe_format_template(value: object) -> str:
+    """Load a legacy/corrupt setting without preventing the app from starting."""
+    try:
+        return validate_format_template(str(value))
+    except (TypeError, ValueError):
+        return FORMAT_TEMPLATE
 
 
 def app_data_dir() -> Path:
@@ -45,6 +86,7 @@ class Settings:
         self.watch_folders = [str(Path(folder)) for folder in self.watch_folders if str(folder).strip()]
         if not self.watch_folders:
             self.watch_folders = [default_downloads()]
+        self.format_template = safe_format_template(self.format_template)
         self.max_title_length = max(10, min(int(self.max_title_length), 200))
         # 初版の安全ゲートは90%を下限にする。より厳しい値は自由に設定できる。
         self.min_confidence = max(0.90, min(float(self.min_confidence), 1.0))
