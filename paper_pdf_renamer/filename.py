@@ -103,6 +103,10 @@ def build_filename(
             raise ValueError(f"ファイル名形式を展開できません: {exc}") from exc
         if not rendered.casefold().endswith(".pdf"):
             rendered += ".pdf"
+        if metadata.translated:
+            stem, extension = rendered[:-4], rendered[-4:]
+            if not re.search(r"(?:^|[\s._()\[\]-])(?:ja|jpn|日本語|翻訳)$", stem, re.IGNORECASE):
+                rendered = f"{stem.rstrip()} [ja]{extension}"
         filename = sanitize_component(rendered)
         if len(str(directory_path / filename)) <= max_path_length:
             break

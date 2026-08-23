@@ -120,3 +120,22 @@ def test_doi_with_et_al_local_author_can_be_renamed():
     )
     assert result.safe_to_rename
     assert result.first_author == "Voges"
+
+
+def test_translated_pdf_uses_doi_metadata_and_is_marked_for_filename():
+    fake = FakeCrossref(ITEM)
+    result = resolve_metadata(
+        LocalEvidence(
+            Path("paper_ja.pdf"),
+            "10.5555/abc",
+            "日本語に翻訳されたタイトル",
+            ("翻訳著者",),
+            language="ja",
+            translation_marker=True,
+        ),
+        fake,
+    )
+    assert result.safe_to_rename
+    assert result.translated
+    assert result.document_language == "ja"
+    assert result.title == "Understanding Customer Experience"

@@ -9,6 +9,10 @@ from .models import LocalEvidence
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 _GENERIC_TITLES = {"untitled", "microsoft word", "adobe acrobat", "pdf"}
 _GENERIC_AUTHORS = {"author", "authors", "research", "unknown", "none", "n/a"}
+_TRANSLATION_MARKER_RE = re.compile(
+    r"(?:^|[\s._()\[\]-])(?:ja|jpn|japanese|日本語|日本語訳|翻訳|translated|translation)(?:$|[\s._()\[\]-])",
+    re.IGNORECASE,
+)
 
 
 def normalize_doi(value: str | None) -> str | None:
@@ -40,6 +44,29 @@ def detect_language(*values: str | None) -> str | None:
     if re.search(r"[A-Za-z]", text):
         return "en"
     return None
+
+
+def detect_document_language(text: str | None) -> str | None:
+    """本文全体の文字量から、翻訳版判定に使う言語を推定する。"""
+
+    if not text:
+        return None
+    japanese = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    # 著者名や所属に含まれる少数の漢字で英語論文を誤判定しない。
+    if japanese >= 80 and (japanese >= latin * 0.03 or japanese >= 300):
+        return "ja"
+    if latin >= 80 and japanese < 80:
+        return "en"
+    return None
+
+
+def has_translation_marker(value: str | Path | None) -> bool:
+    """ファイル名に翻訳版を示す一般的な印があるか確認する。"""
+
+    if not value:
+        return False
+    return bool(_TRANSLATION_MARKER_RE.search(Path(str(value)).stem))
 
 
 def normalize_language(value: str | None) -> str | None:
@@ -309,13 +336,16 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
     if not title and not authors and not doi:
         notes.append("DOI・タイトル・著者候補を検出できませんでした")
     source = "pdf-embedded" if embedded_metadata_used else "pdf-text" if text else "pdf-bytes"
+    document_language = detect_document_language(text)
+    language = document_language or normalize_language(detect_language(title, *authors))
     return LocalEvidence(
         path=pdf_path,
         doi=doi,
         title=title,
         authors=authors,
         year=embedded_year,
-        language=normalize_language(detect_language(title, *authors)),
+        language=language,
         metadata_source=source,
         notes=tuple(notes),
+        translation_marker=has_translation_marker(pdf_path),
     )

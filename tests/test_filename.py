@@ -4,8 +4,8 @@ from paper_pdf_renamer.filename import build_filename, sanitize_component
 from paper_pdf_renamer.models import ResolvedMetadata
 
 
-def metadata(language="en", authors=("Lemon", "Kumar"), title="Understanding Customer Experience"):
-    return ResolvedMetadata("10.1234/example", title, authors, 2016, language, "crossref:doi", 0.98)
+def metadata(language="en", authors=("Lemon", "Kumar"), title="Understanding Customer Experience", translated=False):
+    return ResolvedMetadata("10.1234/example", title, authors, 2016, language, "crossref:doi", 0.98, translated=translated)
 
 
 def test_english_multiple_authors_and_windows_cleanup(tmp_path: Path):
@@ -37,6 +37,15 @@ def test_custom_format_template(tmp_path: Path):
 def test_custom_format_template_adds_pdf_extension(tmp_path: Path):
     result = build_filename(metadata(), tmp_path, format_template="{author} ({year}) - {title}")
     assert result.name.endswith(".pdf")
+
+
+def test_translated_pdf_gets_ja_suffix_without_changing_original_format(tmp_path: Path):
+    result = build_filename(
+        metadata(translated=True),
+        tmp_path,
+        format_template="{author} ({year}). - {title}.pdf",
+    )
+    assert result.name == "Lemon et al. (2016). - Understanding Customer Experience [ja].pdf"
 
 
 def test_duplicate_does_not_overwrite(tmp_path: Path):

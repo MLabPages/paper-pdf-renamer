@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from paper_pdf_renamer.pdf_extract import _guess_title_and_authors, extract_pdf, normalize_doi
+from paper_pdf_renamer.pdf_extract import (
+    _guess_title_and_authors,
+    detect_document_language,
+    extract_pdf,
+    has_translation_marker,
+    normalize_doi,
+)
 
 
 def test_normalize_doi():
@@ -77,3 +83,10 @@ def test_title_after_chapter_cover_is_recovered():
     title, authors = _guess_title_and_authors(text)
     assert title == "Engineering Robots with Heart in Japan The Politics of Cultural Difference in Artificial Emotional Intelligence"
     assert authors == ("Hirofumi Katsuno", "Daniel White")
+
+
+def test_translation_markers_and_document_language_are_detected():
+    assert has_translation_marker("paper_ja.pdf")
+    assert has_translation_marker("paper_日本語訳.pdf")
+    assert not has_translation_marker("japan-paper.pdf")
+    assert detect_document_language("日本語の文章。" * 100 + " English") == "ja"

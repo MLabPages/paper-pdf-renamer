@@ -25,6 +25,7 @@ from .pdf_extract import extract_pdf
 from .startup import is_supported as startup_is_supported
 from .startup import set_enabled as startup_set_enabled
 from .undo import undo_last
+from .watch_state import WatchManifest
 
 
 STATUS_LABELS = {"ready": "候補", "held": "要確認", "failed": "失敗", "renamed": "変更済み"}
@@ -42,6 +43,7 @@ REASON_LABELS = {
     "low-confidence": "信頼度が基準未満です",
     "already-correct-name": "すでに候補名です",
     "source-file-missing": "別の処理で先に変更された可能性があります",
+    "added-while-stopped": "監視停止中に追加されたPDFです。確認後に実行してください",
 }
 
 
@@ -114,6 +116,7 @@ class AppState:
     def __init__(self, settings: Settings):
         self.settings = settings.validate()
         self.history = HistoryLog(self.settings.history_dir)
+        self.watch_manifest = WatchManifest()
         self._lock = threading.RLock()
         self._rename_lock = threading.Lock()
         self._candidates: dict[str, RenameCandidate] = {}
@@ -233,6 +236,10 @@ class AppState:
                 results = BatchScanner(self._service()).execute_approved(ready, [item.source_path for item in ready])
             for result in results:
                 self._upsert(result)
+                if result.status == "renamed" and result.destination_path:
+                    self.watch_manifest.complete(result.source_path, result.destination_path)
+                    for watcher, _, _ in self._watchers:
+                        watcher.mark_completed(result.source_path, result.destination_path)
             self.message = f"{len(results)}件を変更しました"
             return len(results)
 
@@ -255,7 +262,7 @@ class AppState:
             path = Path(folder)
             if not path.is_dir():
                 continue
-            watcher = PollingWatcher(path, service, recursive=recursive)
+            watcher = PollingWatcher(path, service, recursive=recursive, manifest=self.watch_manifest)
             watcher.poll()  # 開始前からあるPDFは既存資産として基準化
             stop = threading.Event()
             thread = threading.Thread(target=self._watch_loop, args=(watcher, stop, interval), daemon=True)
@@ -356,6 +363,7 @@ tr:last-child td { border-bottom: 0; }
 <p><strong>新しくダウンロードするPDF：</strong>フォルダを選択 → 設定を保存 → 「新しいPDFを自動監視」をON。</p>
 <p><strong>すでにあるPDF：</strong>フォルダを選択 → 設定を保存 → 「既存PDFをスキャン」 → 候補を確認 → リネーム。</p>
 <p><strong>このソフトで変更済みのPDF：</strong>「履歴から再整理」を使うと、保存済みの書誌情報で現在の形式の候補を作れます。</p>
+<p><strong>監視停止中に追加されたPDF：</strong>再起動後に候補として表示します。確認して実行するまで変更しません。</p>
 <p>設定を保存しただけではファイル名は変わりません。信頼度が低いPDFは安全のため保留になります。</p>
 </div>
 <div class="inline"><input id="monitor" type="checkbox"><label for="monitor">新しいPDFを自動監視</label></div>

@@ -4,6 +4,7 @@ from paper_pdf_renamer.history import HistoryLog
 from paper_pdf_renamer.models import ResolvedMetadata
 from paper_pdf_renamer.operations import BatchScanner, PollingWatcher, RenameService, metadata_from_history
 from paper_pdf_renamer.undo import undo_last
+from paper_pdf_renamer.watch_state import WatchManifest
 
 
 def good_metadata():
@@ -103,3 +104,39 @@ def test_watcher_waits_for_two_stable_polls(tmp_path: Path):
     assert results[0].status == "renamed"
     assert not source.exists()
     assert watcher.poll() == []
+
+
+def test_pdf_added_while_monitor_was_off_becomes_preview_candidate(tmp_path: Path):
+    existing = tmp_path / "existing.pdf"
+    existing.write_bytes(b"existing")
+    manifest = WatchManifest(tmp_path / "watch-manifest.json")
+    service = RenameService(lambda path: good_metadata())
+
+    first_session = PollingWatcher(tmp_path, service, stability_polls=2, manifest=manifest)
+    assert first_session.poll() == []
+
+    downloaded_while_off = tmp_path / "downloaded.pdf"
+    downloaded_while_off.write_bytes(b"pdf")
+
+    restarted = PollingWatcher(tmp_path, service, stability_polls=2, manifest=manifest)
+    assert restarted.poll() == []
+    results = restarted.poll()
+    assert len(results) == 1
+    assert results[0].status == "ready"
+    assert "added-while-stopped" in results[0].reasons
+    assert downloaded_while_off.exists()
+    assert results[0].destination_path and not results[0].destination_path.exists()
+
+
+def test_first_manifest_snapshot_does_not_change_existing_pdfs(tmp_path: Path):
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+    manifest = WatchManifest(tmp_path / "watch-manifest.json")
+    watcher = PollingWatcher(tmp_path, RenameService(lambda path: good_metadata()), manifest=manifest)
+    assert watcher.poll() == []
+    assert first.exists() and second.exists()
+    known, pending = manifest.load(tmp_path, False)
+    assert {path.name for path in known} == {"first.pdf", "second.pdf"}
+    assert not pending

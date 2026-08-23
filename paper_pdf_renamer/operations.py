@@ -10,7 +10,8 @@ from .config import FORMAT_TEMPLATE, validate_format_template
 from .filename import build_filename
 from .history import HistoryLog
 from .models import RenameCandidate, ResolvedMetadata
-from .pdf_extract import extract_pdf
+from .pdf_extract import extract_pdf, has_translation_marker
+from .watch_state import WatchManifest, path_key
 
 Resolver = Callable[[Path], ResolvedMetadata]
 
@@ -27,6 +28,8 @@ def _metadata_log(metadata: ResolvedMetadata) -> dict[str, object]:
         "confidence": metadata.confidence,
         "reasons": metadata.reasons,
         "paper_type": metadata.paper_type,
+        "document_language": metadata.document_language,
+        "translated": metadata.translated,
     }
 
 
@@ -80,6 +83,10 @@ def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
         confidence=confidence,
         reasons=reasons,
         paper_type=str(record.get("paper_type") or "") or None,
+        document_language=str(record.get("document_language") or language or "") or None,
+        translated=bool(record.get("translated"))
+        or has_translation_marker(record.get("original_filename"))
+        or has_translation_marker(record.get("new_filename")),
     )
 
 
@@ -253,6 +260,8 @@ class BatchScanner:
                 year=data.get("year"), language=data.get("language"), source=data.get("metadata_source", "plan"),
                 confidence=float(data.get("confidence", 0)), reasons=tuple(data.get("reasons", [])),
                 paper_type=data.get("paper_type"),
+                document_language=data.get("document_language"),
+                translated=bool(data.get("translated")),
             )
             result.append(RenameCandidate(
                 source_path=Path(item["source_path"]),
@@ -278,27 +287,65 @@ class BatchScanner:
 class PollingWatcher:
     """OS依存の常駐APIを使わない、完成済みPDFだけを処理するポーラー。"""
 
-    def __init__(self, folder: str | Path, service: RenameService, stability_polls: int = 2, recursive: bool = False):
+    def __init__(
+        self,
+        folder: str | Path,
+        service: RenameService,
+        stability_polls: int = 2,
+        recursive: bool = False,
+        manifest: WatchManifest | None = None,
+    ):
         self.folder = Path(folder)
         self.service = service
         self.stability_polls = max(2, stability_polls)
         self.recursive = recursive
+        self.manifest = manifest
         self._state: dict[Path, tuple[int, int, int]] = {}
         self._processed: set[Path] = set()
+        self._known: dict[str, Path] = {}
+        self._startup_pending: dict[str, Path] = {}
         self._started = False
 
     def poll(self) -> list[RenameCandidate]:
         paths = sorted(self.folder.rglob("*.pdf") if self.recursive else self.folder.glob("*.pdf"))
         current = set(path for path in paths if path.is_file())
+        current_keys = {path_key(path) for path in current}
         self._state = {path: state for path, state in self._state.items() if path in current}
+        self._known = {key: path for key, path in self._known.items() if key in current_keys}
+        self._startup_pending = {
+            key: path for key, path in self._startup_pending.items() if key in current_keys
+        }
 
         # 監視開始前からあるPDFは既存資産として扱い、自動変更しない。
-        # 初回スナップショット後に現れたファイルだけを「新規」として処理する。
+        # 前回の一覧がある場合は、停止中に追加されたPDFだけを要確認候補にする。
         if not self._started:
+            saved = self.manifest.load(self.folder, self.recursive) if self.manifest else None
+            if saved is None:
+                self._known = {path_key(path): path for path in current}
+                self._startup_pending.clear()
+                for path in current:
+                    stat = path.stat()
+                    self._state[path] = (stat.st_mtime_ns, stat.st_size, self.stability_polls)
+                    self._processed.add(path)
+                self._persist_manifest()
+                self._started = True
+                return []
+
+            known, pending = saved
+            known_keys = {path_key(path) for path in known}
+            pending_keys = {path_key(path) for path in pending}
+            self._known = {path_key(path): path for path in current if path_key(path) in known_keys}
+            self._startup_pending = {
+                path_key(path): path
+                for path in current
+                if path_key(path) not in known_keys or path_key(path) in pending_keys
+            }
             for path in current:
                 stat = path.stat()
                 self._state[path] = (stat.st_mtime_ns, stat.st_size, self.stability_polls)
-                self._processed.add(path)
+                if path_key(path) not in self._startup_pending:
+                    self._processed.add(path)
+            self._persist_manifest()
             self._started = True
             return []
 
@@ -313,13 +360,54 @@ class PollingWatcher:
             self._state[path] = (*signature, count)
             if count < self.stability_polls:
                 continue
-            result = self.service.process(path, auto=True)
+            key = path_key(path)
+            # 停止中に追加されたPDFは、再起動後に候補だけ作る。
+            # 通常の監視中に追加されたPDFだけが従来どおり自動処理される。
+            result = self.service.process(path, auto=key not in self._startup_pending)
+            if key in self._startup_pending:
+                result = replace(
+                    result,
+                    reasons=list(dict.fromkeys([*result.reasons, "added-while-stopped"])),
+                )
             results.append(result)
             self._processed.add(path)
-            if result.destination_path:
+            if key in self._startup_pending:
+                # ユーザーが候補を実行するまで、次回起動でも再表示できるよう
+                # pendingに残す。現在のプロセスでは重複表示しない。
+                pass
+            else:
+                self._known[key] = path
+            if result.status == "renamed" and result.destination_path and result.destination_path.is_file():
+                self._known.pop(key, None)
+                self._known[path_key(result.destination_path)] = result.destination_path
                 self._processed.add(result.destination_path)
                 self._state.pop(path, None)
+        self._persist_manifest()
         return results
+
+    def mark_completed(self, source: str | Path, destination: str | Path) -> None:
+        """UIから承認された候補を既知ファイルとして反映する。"""
+
+        source_key = path_key(source)
+        if source_key not in self._startup_pending and source_key not in self._known:
+            return
+        self._startup_pending.pop(source_key, None)
+        self._known.pop(source_key, None)
+        destination_path = Path(destination)
+        self._known[path_key(destination_path)] = destination_path
+        self._processed.add(destination_path)
+        self._state.pop(Path(source), None)
+        self._persist_manifest()
+
+    def _persist_manifest(self) -> None:
+        if not self.manifest:
+            return
+        self.manifest.save(
+            self.folder,
+            self.recursive,
+            set(self._known.values()),
+            set(self._startup_pending.values()),
+        )
 
     def run(self, interval: float = 5.0, stop: Callable[[], bool] | None = None) -> None:
         while not (stop and stop()):

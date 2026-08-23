@@ -132,13 +132,19 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
         title = data["title"] or evidence.title
         authors = data["authors"] or evidence.authors
         year = data["year"] or evidence.year
-        language = normalize_language(data["language"]) or detect_language(title, *authors) or evidence.language
+        metadata_language = normalize_language(data["language"])
+        document_language = normalize_language(evidence.language)
+        language = metadata_language or detect_language(title, *authors) or document_language
         paper_type = data["type"]
         similarity = title_similarity(evidence.title, title) if evidence.title else 1.0
         author_ok = _author_match(evidence.first_author, authors) if evidence.first_author else True
-        if evidence.title and similarity < 0.85:
+        translated = bool(
+            source == "crossref:doi"
+            and (evidence.translation_marker or (document_language == "ja" and metadata_language != "ja"))
+        )
+        if evidence.title and similarity < 0.85 and not translated:
             reasons.append("title-mismatch")
-        if evidence.first_author and not author_ok:
+        if evidence.first_author and not author_ok and not translated:
             reasons.append("author-mismatch")
         if not doi:
             reasons.append("doi-missing")
@@ -151,15 +157,17 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
             confidence += 0.04
         if evidence.first_author and author_ok:
             confidence += 0.03
-        if evidence.first_author and not author_ok:
+        if evidence.first_author and not author_ok and not translated:
             confidence -= 0.45
-        if evidence.title and similarity < 0.85:
+        if evidence.title and similarity < 0.85 and not translated:
             confidence -= 0.35
         if source == "crossref:title":
             confidence -= 0.03
     else:
         doi, title, authors, year = evidence.doi, evidence.title, evidence.authors, evidence.year
         language, paper_type = evidence.language, None
+        document_language = evidence.language
+        translated = evidence.translation_marker
         confidence = 0.55 if doi else 0.20
         if not doi:
             reasons.append("doi-missing")
@@ -191,4 +199,6 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
         reasons=unique_reasons,
         paper_type=paper_type,
         local=evidence,
+        document_language=document_language,
+        translated=translated,
     )
