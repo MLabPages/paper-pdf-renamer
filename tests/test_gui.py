@@ -1,8 +1,13 @@
 import base64
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from paper_pdf_renamer.gui import select_windows_folder
+from paper_pdf_renamer.gui import run_server, select_windows_folder
+
+
+def test_gui_uses_port_separate_from_translator() -> None:
+    assert inspect.signature(run_server).parameters["port"].default == 8766
 
 
 def test_select_windows_folder_decodes_unicode_path() -> None:

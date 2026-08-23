@@ -288,6 +288,11 @@ textarea { min-height: 90px; resize: vertical; }
 input[readonly] { background: #f1f5f9; }
 .inline { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
 .inline label { margin: 0; }
+.guide { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; font-size: .84rem; line-height: 1.5; }
+.guide p { margin: 5px 0; }
+.guide p:first-child { margin-top: 0; }
+.guide p:last-child { margin-bottom: 0; }
+.help { color: #64748b; font-size: .8rem; line-height: 1.45; margin: 5px 0 8px; }
 button { border: 0; border-radius: 7px; padding: 8px 12px; cursor: pointer; background: #2563eb; color: white; }
 button.secondary { background: #e2e8f0; color: #1e293b; }
 button:disabled { opacity: .55; cursor: default; }
@@ -312,22 +317,30 @@ tr:last-child td { border-bottom: 0; }
 <div class="layout">
 <section>
 <h2>監視と設定</h2>
-<div class="inline"><input id="monitor" type="checkbox"><label for="monitor">自動監視 ON</label></div>
+<div class="guide">
+<p><strong>新しくダウンロードするPDF：</strong>フォルダを選択 → 設定を保存 → 「新しいPDFを自動監視」をON。</p>
+<p><strong>すでにあるPDF：</strong>フォルダを選択 → 設定を保存 → 「既存PDFをスキャン」 → 候補を確認 → リネーム。</p>
+<p>設定を保存しただけではファイル名は変わりません。信頼度が低いPDFは安全のため保留になります。</p>
+</div>
+<div class="inline"><input id="monitor" type="checkbox"><label for="monitor">新しいPDFを自動監視</label></div>
+<p class="help">ONにすると、監視開始後に新しく保存されたPDFを対象にします。監視開始前からあるPDFは対象外です。</p>
 <label for="folders">監視対象フォルダ（1行1フォルダ）</label>
 <textarea id="folders" spellcheck="false"></textarea>
 <div class="folder-actions"><button id="choose-folder" class="secondary" type="button">フォルダを選択…</button></div>
+<p class="help">フォルダを選んだ後、必ず「設定を保存」を押してください。</p>
 <div class="inline"><input id="recursive" type="checkbox"><label for="recursive">サブフォルダも監視</label></div>
 <label>ファイル名形式</label><input id="format" readonly>
 <label for="max-title">タイトル最大長</label><input id="max-title" type="number" min="10" max="200">
 <label for="confidence">自動変更の信頼度基準（0.90以上）</label><input id="confidence" type="number" min="0.90" max="1" step="0.01">
 <label for="mailto">Crossref連絡先（任意）</label><input id="mailto" type="text" placeholder="your-name@example.com">
 <div class="inline"><input id="auto-start" type="checkbox"><label for="auto-start">Windows起動時に自動起動</label></div>
-<div class="actions"><button id="save">設定を保存</button><button id="scan" class="secondary">既存PDFをスキャン</button><button id="undo" class="secondary">直近をUndo</button></div>
+<div class="actions"><button id="save">設定を保存（必須）</button><button id="scan" class="secondary">既存PDFをスキャン（変更なし）</button><button id="undo" class="secondary">直近をUndo</button></div>
 <p class="status-line" id="local-status"></p>
 </section>
 <section>
 <h2>リネーム候補（スキャン結果／要確認一覧）</h2>
-<div class="actions"><button id="apply">選択した候補を確認して実行</button></div>
+<p class="help">スキャンでは変更しません。状態が「候補」の行にチェックを入れ、変更前と変更後を確認してから実行してください。</p>
+<div class="actions"><button id="apply">チェックした候補をリネーム</button></div>
 <div class="table-wrap"><table><thead><tr><th></th><th>状態</th><th>変更前</th><th>変更後候補</th><th>信頼度</th><th>理由</th></tr></thead><tbody id="candidates"></tbody></table></div>
 </section>
 <section class="wide">
@@ -355,7 +368,7 @@ function render(state) {
   const badge = $("monitor-badge"); badge.textContent = state.monitoring ? "監視中" : "停止中"; badge.className = state.monitoring ? "badge on" : "badge";
   $("message").textContent = state.message || "";
   const candidates = $("candidates"); candidates.replaceChildren();
-  if (!state.candidates.length) { const row = candidates.insertRow(); const td = row.insertCell(); td.colSpan = 6; td.className = "empty"; td.textContent = "候補はありません。既存PDFをスキャンするか、自動監視をONにしてください。"; }
+  if (!state.candidates.length) { const row = candidates.insertRow(); const td = row.insertCell(); td.colSpan = 6; td.className = "empty"; td.textContent = "候補はありません。既存PDFなら「既存PDFをスキャン」、新規PDFなら「新しいPDFを自動監視」を使ってください。"; }
   for (const item of state.candidates.slice().reverse()) { const row = candidates.insertRow(); const check = row.insertCell(); if (item.status === "ready") { const input = document.createElement("input"); input.type = "checkbox"; input.dataset.id = item.id; check.appendChild(input); } cell(row, item.status_label, item.status); cell(row, item.source_path && item.source_path.split(/[\\/]/).pop()); cell(row, item.destination_path && item.destination_path.split(/[\\/]/).pop()); cell(row, `${Math.round(Number(item.metadata.confidence || 0) * 100)}%`); cell(row, item.reason_text || "—", item.status === "held" ? "hold" : item.status === "failed" ? "failed" : ""); }
   const history = $("history"); history.replaceChildren();
   if (!state.history.length) { const row = history.insertRow(); const td = row.insertCell(); td.colSpan = 7; td.className = "empty"; td.textContent = "まだ処理履歴はありません。"; }
@@ -364,9 +377,9 @@ function render(state) {
 async function refresh() { try { render(await api("/api/state")); } catch (error) { $("local-status").textContent = error.message; } }
 async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked})}); settingsDirty = false; lastServerSettings = null; if (refreshNow) await refresh(); }
 $("save").onclick = async () => { try { await saveSettings(); $("local-status").textContent = "設定を保存しました"; } catch (error) { $("local-status").textContent = error.message; } };
-$("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
+$("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); const result = await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); $("local-status").textContent = result.message || (enabled ? "新しいPDFの自動監視を開始しました" : "自動監視を停止しました"); } catch (error) { $("local-status").textContent = error.message; } };
 $("scan").onclick = async () => { try { $("local-status").textContent = "スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/scan", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
-$("apply").onclick = async () => { const ids = [...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id); if (!ids.length) { $("local-status").textContent = "実行する候補を選択してください"; return; } if (!confirm(`${ids.length}件を確認済みとしてリネームしますか？`)) return; try { const result = await api("/api/apply", {method:"POST", body:JSON.stringify({ids})}); $("local-status").textContent = `${result.count}件を変更しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
+$("apply").onclick = async () => { const ids = [...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id); if (!ids.length) { $("local-status").textContent = "実行する候補を選択してください"; return; } if (!confirm(`${ids.length}件を確認済みとしてリネームしますか？`)) return; try { const result = await api("/api/apply", {method:"POST", body:JSON.stringify({ids})}); $("local-status").textContent = result.count ? `${result.count}件をリネームしました` : "実行可能な候補がありません。状態が「候補」の行を選択してください"; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("undo").onclick = async () => { if (!confirm("直近の成功したリネームを元に戻しますか？")) return; try { const result = await api("/api/undo", {method:"POST", body:"{}"}); $("local-status").textContent = result.result.status === "undone" ? "直近のリネームを元に戻しました" : "Undoできる履歴がありません"; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("choose-folder").onclick = async () => { try { $("local-status").textContent = "フォルダ選択ダイアログを開いています…"; const result = await api("/api/select-folder", {method:"POST", body:"{}"}); if (!result.path) { $("local-status").textContent = "フォルダ選択をキャンセルしました"; return; } const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); if (!folders.some((folder) => folder.toLowerCase() === result.path.toLowerCase())) folders.push(result.path); $("folders").value = folders.join("\n"); settingsDirty = true; $("local-status").textContent = "フォルダを追加しました。設定を保存してください"; } catch (error) { $("local-status").textContent = error.message; } };
 for (const id of ["folders", "recursive", "max-title", "confidence", "mailto", "auto-start"]) { $(id).addEventListener("input", () => { settingsDirty = true; }); $(id).addEventListener("change", () => { settingsDirty = true; }); }
@@ -446,7 +459,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
 
-def run_server(port: int = 8765, open_browser: bool = True) -> int:
+def run_server(port: int = 8766, open_browser: bool = True) -> int:
     state = AppState(Settings.load())
     if state.settings.monitor_enabled:
         state.start_monitor()
