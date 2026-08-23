@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from paper_pdf_renamer.crossref import resolve_metadata
+from paper_pdf_renamer.crossref import _author_match, resolve_metadata
 from paper_pdf_renamer.models import LocalEvidence
 
 
@@ -27,6 +27,30 @@ ITEM = {
     "type": "journal-article",
 }
 
+LAITY_ITEM = {
+    "DOI": "10.1109/RO-MAN63969.2025.11217771",
+    "title": ["Robot Continuity across Embodiments: Portability, Identity and Migration of Robotic Systems"],
+    "author": [
+        {"family": "Laity", "given": "Weston"},
+        {"family": "Holthaus", "given": "Patrick"},
+        {"family": "Haring", "given": "Kerstin"},
+    ],
+    "issued": {"date-parts": [[2025]]},
+    "type": "proceedings-article",
+}
+
+VOGES_ITEM = {
+    "DOI": "10.1145/3757279.3785627",
+    "title": ["Crafting Companions: A Mixed Methods Exploration of Customization amongst Robot Owners"],
+    "author": [
+        {"family": "Voges", "given": "Amelie"},
+        {"family": "Foster", "given": "Mary Ellen"},
+        {"family": "Cross", "given": "Emily S."},
+    ],
+    "issued": {"date-parts": [[2026]]},
+    "type": "proceedings-article",
+}
+
 
 def test_doi_has_priority_and_high_confidence():
     fake = FakeCrossref(ITEM)
@@ -50,3 +74,39 @@ def test_title_search_can_recover_doi_but_low_evidence_remains_visible():
     assert fake.lookups[0][0] == "title"
     assert result.doi == "10.5555/abc"
     assert result.source == "crossref:title"
+
+
+def test_author_match_ignores_et_al_and_affiliation_markers():
+    assert _author_match("Voges et al.", ("Voges", "Foster", "Cross"))
+    assert _author_match("Weston Laity1, Patrick Holthaus2", ("Laity", "Holthaus"))
+
+
+def test_wrapped_title_without_doi_can_recover_crossref_metadata():
+    fake = FakeCrossref(LAITY_ITEM)
+    result = resolve_metadata(
+        LocalEvidence(
+            Path("Laity2025.pdf"),
+            None,
+            "Robot Continuity across Embodiments: Portability, Identity and Migration of Robotic Systems",
+            ("Weston Laity1", "Patrick Holthaus2", "Kerstin Haring1"),
+        ),
+        fake,
+    )
+    assert result.safe_to_rename
+    assert result.doi == "10.1109/ro-man63969.2025.11217771"
+    assert result.source == "crossref:title"
+
+
+def test_doi_with_et_al_local_author_can_be_renamed():
+    fake = FakeCrossref(VOGES_ITEM)
+    result = resolve_metadata(
+        LocalEvidence(
+            Path("Voges et al. (2026).pdf"),
+            "10.1145/3757279.3785627",
+            "Crafting Companions: A Mixed Methods Exploration of Customization amongst Robot Owners",
+            ("Voges et al.",),
+        ),
+        fake,
+    )
+    assert result.safe_to_rename
+    assert result.first_author == "Voges"

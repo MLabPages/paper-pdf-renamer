@@ -29,8 +29,10 @@ def title_similarity(left: str | None, right: str | None) -> float:
 
 def _family(value: str | None) -> str:
     raw = (value or "").strip()
+    raw = re.sub(r"\s+(?:et\s+al\.?|and\s+others|ほか)\b.*$", "", raw, flags=re.IGNORECASE)
     if "," in raw:
         raw = raw.split(",", 1)[0]
+    raw = re.sub(r"[0-9¹²³⁴⁵⁶⁷⁸⁹⁰*†‡]+$", "", raw).strip()
     value = _norm_text(raw)
     return value.split()[-1] if value else ""
 

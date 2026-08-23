@@ -64,6 +64,35 @@ def _split_authors(value: str | None) -> tuple[str, ...]:
     return tuple(parts[:20])
 
 
+def _looks_like_author_line(value: str) -> bool:
+    """Detect common author-line markers without treating a wrapped title as authors."""
+    if re.search(r"[0-9¹²³⁴⁵⁶⁷⁸⁹⁰]", value):
+        return True
+    if re.search(r"[;&]", value):
+        return True
+    if re.search(r"\bet\s+al\.?\b", value, re.IGNORECASE):
+        return True
+    if re.search(r"\band\b", value, re.IGNORECASE):
+        capitalized_words = re.findall(r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'-]*\b", value)
+        if len(capitalized_words) >= 3 and not re.search(r"\b(?:of|the|for|in|to|with|across|on|from|as|by)\b", value, re.IGNORECASE):
+            return True
+    if value.count(",") >= 2 and not re.search(r"\b(?:of|the|and|for|in|to|with|across|on|from|as|by)\b", value, re.IGNORECASE):
+        return True
+    return False
+
+
+def _comma_separated_authors(value: str) -> tuple[str, ...]:
+    """Split a comma-separated author line while leaving comma-formatted names intact."""
+    parts = tuple(part.strip() for part in re.split(r"\s*,\s*", value) if part.strip())
+    if len(parts) < 2:
+        return ()
+    if any(len(part.split()) > 6 for part in parts):
+        return ()
+    if any(not re.search(r"[A-ZÀ-ÖØ-Þ一-龯ぁ-んァ-ン]", part) for part in parts):
+        return ()
+    return parts[:20]
+
+
 def _text_lines(text: str) -> list[str]:
     lines = []
     for line in text.splitlines():
@@ -97,12 +126,35 @@ def _guess_title_and_authors(text: str) -> tuple[str | None, tuple[str, ...]]:
     if not title:
         return None, ()
 
+    # PDF text extraction often returns a centered, wrapped title as two or
+    # more separate lines. Join title-looking continuation lines until the
+    # author line or abstract starts, so Crossref title search can recover a
+    # DOI even when the first page does not print one.
+    title_parts = [title]
+    author_index = title_index + 1
+    while author_index < len(lines) and len(title_parts) < 4:
+        line = lines[author_index]
+        lowered = line.casefold()
+        if (
+            _looks_like_author_line(line)
+            or DOI_RE.search(line)
+            or "@" in line
+            or lowered.startswith(("abstract", "keywords", "要旨", "キーワード", "introduction"))
+            or not _looks_like_title(line)
+        ):
+            break
+        title_parts.append(line)
+        author_index += 1
+    title = " ".join(title_parts)
+
     authors: tuple[str, ...] = ()
-    for line in lines[title_index + 1 : title_index + 5]:
+    for line in lines[author_index : author_index + 5]:
         if DOI_RE.search(line) or line.lower().startswith(("abstract", "keywords")):
             continue
         if re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ一-龯ぁ-んァ-ン]", line) and len(line) <= 180:
             pieces = _split_authors(line)
+            if len(pieces) == 1 and "," in line:
+                pieces = _comma_separated_authors(line)
             if len(pieces) >= 2 or re.search(r"\b(?:and|et al)\b|、|，", line, re.I):
                 authors = pieces
                 break
