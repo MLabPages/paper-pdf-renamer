@@ -33,6 +33,7 @@ REASON_LABELS = {
     "doi-missing": "DOIが見つかりません",
     "title-missing": "タイトルがありません",
     "author-missing": "著者がありません",
+    "author-count-unknown": "履歴に著者一覧がなく、2名か3名以上か判定できません",
     "year-missing": "出版年がありません",
     "author-mismatch": "著者が一致しません",
     "title-mismatch": "タイトルが一致しません",

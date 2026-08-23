@@ -37,8 +37,8 @@ def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
     """履歴に保存した書誌情報から、再整理用のメタデータを復元する。
 
     古い履歴には著者配列と言語がないため、当時のファイル名に含まれる
-    ``et al.`` / ``ほか`` も補助的に使う。情報が足りない履歴は無理に
-    推測せず、再整理候補にしない。
+    ``et al.`` / ``ほか`` も補助的に使う。著者人数が特定できない履歴は
+    ダミー著者を作らず、要確認候補として扱う。
     """
 
     title = str(record.get("title") or "").strip()
@@ -58,13 +58,17 @@ def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
     authors = tuple(str(value).strip() for value in raw_authors if str(value).strip()) if isinstance(raw_authors, (list, tuple)) else ()
     old_names = " ".join(str(record.get(key) or "") for key in ("original_filename", "new_filename"))
     language = str(record.get("language") or "").strip() or None
+    historical_reasons: list[str] = []
+    multiple_marker = " et al." in old_names.casefold() or "ほか" in old_names
     if not authors:
-        multiple = " et al." in old_names.casefold() or "ほか" in old_names
-        # 著者配列がない古い履歴で人数を推測できない場合は、過去の
-        # ``et al.`` / ``ほか`` 表記を維持し、2名用の表記へ誤変換しない。
-        authors = (first_author, "履歴上の著者1", "履歴上の著者2") if multiple else (first_author,)
+        authors = (first_author,)
+        if multiple_marker:
+            historical_reasons.append("author-count-unknown")
         if language is None and "ほか" in old_names:
             language = "ja"
+    elif len(authors) == 1 and multiple_marker:
+        # 著者配列が第一著者だけの古い履歴も同じく人数不明とする。
+        historical_reasons.append("author-count-unknown")
     if not authors:
         return None
 
@@ -75,6 +79,7 @@ def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
         reasons = tuple(str(value) for value in reasons_value if str(value).strip())
     else:
         reasons = ()
+    reasons = tuple(dict.fromkeys([*reasons, *historical_reasons]))
     return ResolvedMetadata(
         doi=str(record.get("doi") or "").strip() or None,
         title=title,

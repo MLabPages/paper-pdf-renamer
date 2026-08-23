@@ -70,6 +70,33 @@ def test_history_metadata_can_create_candidate_for_new_format(tmp_path: Path):
     assert updated.destination_path and updated.destination_path.name == "Schmitt (1999). - A Safe Paper.pdf"
 
 
+def test_legacy_history_without_author_list_is_held_instead_of_faking_author(tmp_path: Path):
+    source = tmp_path / "Jiang et al. (2026).pdf"
+    source.write_bytes(b"pdf")
+    restored = metadata_from_history({
+        "original_filename": "download.pdf",
+        "new_filename": source.name,
+        "new_path": str(source),
+        "doi": "10.1234/example",
+        "title": "A Safe Paper",
+        "first_author": "Jiang",
+        "year": 2026,
+        "language": "en",
+        "metadata_source": "crossref:doi",
+        "confidence": 0.99,
+    })
+    assert restored is not None
+    assert restored.authors == ("Jiang",)
+    assert "author-count-unknown" in restored.reasons
+    candidate = RenameService(
+        lambda path: restored,
+        format_template="{author} ({year}). - {title}.pdf",
+    ).make_candidate_from_metadata(source, restored)
+    assert candidate.status == "held"
+    assert candidate.destination_path is None
+    assert "author-count-unknown" in candidate.reasons
+
+
 def test_batch_scan_is_preview_only_until_explicit_approval(tmp_path: Path):
     first = tmp_path / "one.pdf"
     second = tmp_path / "two.pdf"
