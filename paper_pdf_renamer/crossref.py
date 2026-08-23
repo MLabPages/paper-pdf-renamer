@@ -60,6 +60,9 @@ def _item_metadata(item: dict[str, Any]) -> dict[str, Any]:
             # ファイル名規則と第一著者照合には姓だけを使う。
             authors.append(str(name))
     title = (item.get("title") or [None])[0]
+    subtitle = (item.get("subtitle") or [None])[0]
+    if title and subtitle:
+        title = f"{title}: {subtitle}"
     return {
         "doi": normalize_doi(item.get("DOI")),
         "title": title,

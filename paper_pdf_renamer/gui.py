@@ -115,6 +115,7 @@ class AppState:
         self.settings = settings.validate()
         self.history = HistoryLog(self.settings.history_dir)
         self._lock = threading.RLock()
+        self._rename_lock = threading.Lock()
         self._candidates: dict[str, RenameCandidate] = {}
         self._watchers: list[tuple[PollingWatcher, threading.Event, threading.Thread]] = []
         self.monitoring = False
@@ -228,7 +229,8 @@ class AppState:
             if not ready:
                 self.message = "実行可能な候補が選択されていません"
                 return 0
-            results = BatchScanner(self._service()).execute_approved(ready, [item.source_path for item in ready])
+            with self._rename_lock:
+                results = BatchScanner(self._service()).execute_approved(ready, [item.source_path for item in ready])
             for result in results:
                 self._upsert(result)
             self.message = f"{len(results)}件を変更しました"
@@ -236,7 +238,8 @@ class AppState:
 
     def undo(self) -> dict[str, Any]:
         with self._lock:
-            result = undo_last(self.history)
+            with self._rename_lock:
+                result = undo_last(self.history)
             self.message = "直近のリネームを元に戻しました" if result.get("status") == "undone" else "Undoできる成功履歴がありません"
             return result
 
@@ -280,16 +283,17 @@ class AppState:
     def _watch_loop(self, watcher: PollingWatcher, stop: threading.Event, interval: float) -> None:
         while not stop.wait(interval):
             try:
-                results = watcher.poll()
+                with self._lock:
+                    with self._rename_lock:
+                        results = watcher.poll()
+                    if results:
+                        for result in results:
+                            self._upsert(result)
+                        self.message = f"新規PDFを処理: {len(results)}件"
             except Exception as exc:
                 with self._lock:
                     self.message = f"監視エラー: {exc}"
                 continue
-            if results:
-                with self._lock:
-                    for result in results:
-                        self._upsert(result)
-                    self.message = f"新規PDFを処理: {len(results)}件"
 
 
 HTML = r"""<!doctype html>
@@ -386,6 +390,7 @@ tr:last-child td { border-bottom: 0; }
 const $ = (id) => document.getElementById(id);
 let settingsDirty = false;
 let lastServerSettings = null;
+let applyInProgress = false;
 async function api(url, options={}) { const response = await fetch(url, {headers:{"Content-Type":"application/json"}, ...options}); const data = await response.json(); if (!response.ok) throw new Error(data.error || "通信に失敗しました"); return data; }
 function cell(row, value, className="") { const td = document.createElement("td"); td.textContent = value ?? "—"; if (className) td.className = className; row.appendChild(td); return td; }
 function formSettingsSnapshot() { return {folders:$("folders").value,recursive:$("recursive").checked,format:$("format").value,maxTitle:$("max-title").value,confidence:$("confidence").value,mailto:$("mailto").value,autoStart:$("auto-start").checked}; }
@@ -415,7 +420,19 @@ $("save").onclick = async () => { try { await saveSettings(); $("local-status").
 $("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); const result = await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); $("local-status").textContent = result.message || (enabled ? "新しいPDFの自動監視を開始しました" : "自動監視を停止しました"); } catch (error) { $("local-status").textContent = error.message; } };
 $("scan").onclick = async () => { try { $("local-status").textContent = "スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/scan", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("reformat").onclick = async () => { try { $("local-status").textContent = "履歴から再整理候補を作成中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/reformat-history", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の再整理候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
-$("apply").onclick = async () => { const ids = [...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id); if (!ids.length) { $("local-status").textContent = "実行する候補を選択してください"; return; } if (!confirm(`${ids.length}件を確認済みとしてリネームしますか？`)) return; try { const result = await api("/api/apply", {method:"POST", body:JSON.stringify({ids})}); $("local-status").textContent = result.count ? `${result.count}件をリネームしました` : "実行可能な候補がありません。状態が「候補」の行を選択してください"; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
+$("apply").onclick = async () => {
+  if (applyInProgress) return;
+  const ids = [...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id);
+  if (!ids.length) { $("local-status").textContent = "実行する候補を選択してください"; return; }
+  if (!confirm(`${ids.length}件を確認済みとしてリネームしますか？`)) return;
+  applyInProgress = true; $("apply").disabled = true;
+  try {
+    const result = await api("/api/apply", {method:"POST", body:JSON.stringify({ids})});
+    $("local-status").textContent = result.count ? `${result.count}件をリネームしました` : "実行可能な候補がありません。状態が「候補」の行を選択してください";
+    await refresh();
+  } catch (error) { $("local-status").textContent = error.message; }
+  finally { applyInProgress = false; $("apply").disabled = false; }
+};
 $("undo").onclick = async () => { if (!confirm("直近の成功したリネームを元に戻しますか？")) return; try { const result = await api("/api/undo", {method:"POST", body:"{}"}); $("local-status").textContent = result.result.status === "undone" ? "直近のリネームを元に戻しました" : "Undoできる履歴がありません"; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("choose-folder").onclick = async () => { try { $("local-status").textContent = "フォルダ選択ダイアログを開いています…"; const result = await api("/api/select-folder", {method:"POST", body:"{}"}); if (!result.path) { $("local-status").textContent = "フォルダ選択をキャンセルしました"; return; } const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); if (!folders.some((folder) => folder.toLowerCase() === result.path.toLowerCase())) folders.push(result.path); $("folders").value = folders.join("\n"); settingsDirty = true; $("local-status").textContent = "フォルダを追加しました。設定を保存してください"; } catch (error) { $("local-status").textContent = error.message; } };
 for (const id of ["folders", "recursive", "format", "max-title", "confidence", "mailto", "auto-start"]) { $(id).addEventListener("input", () => { settingsDirty = true; }); $(id).addEventListener("change", () => { settingsDirty = true; }); }

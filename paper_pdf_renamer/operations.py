@@ -137,8 +137,18 @@ class RenameService:
         source, destination = candidate.source_path, candidate.destination_path
         assert destination is not None
         if not source.exists():
-            updated = replace(candidate, status="failed", reasons=["source-file-missing"])
-            self._log(updated, "rename")
+            recovered = self._recorded_destination(source)
+            if recovered is not None:
+                # A second request can arrive after another request already
+                # completed this rename. Treat it as idempotent instead of
+                # showing a misleading failure.
+                updated = replace(candidate, destination_path=recovered, status="renamed", reasons=[])
+                self._log(updated, "rename")
+                return updated
+            # The source disappeared without a matching successful record.
+            # Do not report a false rename failure or retry it automatically.
+            updated = replace(candidate, status="held", reasons=["source-file-missing"])
+            self._log(updated, "hold")
             return updated
         destination = build_filename(
             candidate.metadata, directory=source.parent, source=source,
@@ -162,6 +172,22 @@ class RenameService:
         self._log(updated, "rename")
         return updated
 
+    def _recorded_destination(self, source: Path) -> Path | None:
+        if not self.history:
+            return None
+        source_key = _path_key(source)
+        for record in reversed(self.history.read()):
+            action = record.get("action")
+            if action == "undo" and record.get("status") == "undone" and _path_key(record.get("new_path")) == source_key:
+                return None
+            if action != "rename" or record.get("status") != "renamed":
+                continue
+            if _path_key(record.get("original_path")) != source_key:
+                continue
+            destination = Path(str(record.get("new_path") or ""))
+            return destination if destination.is_file() else None
+        return None
+
     def process(self, path: str | Path, auto: bool = True) -> RenameCandidate:
         candidate = self.make_candidate(path)
         if auto and candidate.ready:
@@ -174,6 +200,8 @@ class RenameService:
         if not self.history:
             return
         metadata = _metadata_log(candidate.metadata)
+        if candidate.reasons:
+            metadata["reasons"] = tuple(candidate.reasons)
         self.history.append({
             "action": action,
             "status": candidate.status,
@@ -184,6 +212,15 @@ class RenameService:
             **metadata,
             "error": error,
         })
+
+
+def _path_key(value: object) -> str:
+    if not value:
+        return ""
+    try:
+        return str(Path(str(value)).resolve()).casefold()
+    except (OSError, RuntimeError, ValueError):
+        return str(value).casefold()
 
 
 def default_resolver(path: Path) -> ResolvedMetadata:

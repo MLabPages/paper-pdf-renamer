@@ -8,6 +8,7 @@ from .models import LocalEvidence
 
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 _GENERIC_TITLES = {"untitled", "microsoft word", "adobe acrobat", "pdf"}
+_GENERIC_AUTHORS = {"author", "authors", "research", "unknown", "none", "n/a"}
 
 
 def normalize_doi(value: str | None) -> str | None:
@@ -23,7 +24,9 @@ def normalize_doi(value: str | None) -> str | None:
 def _clean(value: str | None) -> str | None:
     if not value:
         return None
-    value = unicodedata.normalize("NFKC", value).replace("\x00", " ")
+    value = unicodedata.normalize("NFKC", value)
+    # PDFの埋め込み欄には、BOMやフォント用の制御文字が混ざることがある。
+    value = "".join(" " if unicodedata.category(char) in {"Cc", "Cf"} else char for char in value)
     value = re.sub(r"\s+", " ", value).strip()
     return value or None
 
@@ -66,17 +69,33 @@ def _split_authors(value: str | None) -> tuple[str, ...]:
 
 def _looks_like_author_line(value: str) -> bool:
     """Detect common author-line markers without treating a wrapped title as authors."""
-    if re.search(r"[0-9¹²³⁴⁵⁶⁷⁸⁹⁰]", value):
-        return True
-    if re.search(r"[;&]", value):
-        return True
-    if re.search(r"\bet\s+al\.?\b", value, re.IGNORECASE):
+    if re.search(r"\b(?:department|university|school of|hertfordshire|united kingdom|e-mail|email)\b", value, re.IGNORECASE):
+        return False
+    if re.search(r"\bet\s+al\.?\b", value, re.IGNORECASE) and not re.search(r"[\[\]]", value):
         return True
     if re.search(r"\band\b", value, re.IGNORECASE):
         capitalized_words = re.findall(r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'-]*\b", value)
-        if len(capitalized_words) >= 3 and not re.search(r"\b(?:of|the|for|in|to|with|across|on|from|as|by)\b", value, re.IGNORECASE):
+        if (
+            len(value) <= 180
+            and len(capitalized_words) >= 3
+            and (value.count(",") >= 1 or value.count(".") <= 2)
+            and not re.search(r"\b(?:of|the|for|in|to|with|across|on|from|as|by)\b", value, re.IGNORECASE)
+        ):
             return True
-    if value.count(",") >= 2 and not re.search(r"\b(?:of|the|and|for|in|to|with|across|on|from|as|by)\b", value, re.IGNORECASE):
+    if (
+        re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ一-龯ぁ-んァ-ン][0-9¹²³⁴⁵⁶⁷⁸⁹⁰]", value)
+        and not re.search(r"[\[\]]", value)
+        and len(value) <= 180
+        and len(re.findall(r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'-]*\b", value)) >= 2
+    ):
+        return True
+    if (
+        value.count(",") >= 2
+        and len(value) <= 180
+        and len(re.findall(r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'-]*\b", value)) >= 3
+        and not re.search(r"\b(?:19|20)\d{2}\b", value)
+        and not re.search(r"\b(?:of|the|and|for|in|to|with|across|on|from|as|by)\b", value, re.IGNORECASE)
+    ):
         return True
     return False
 
@@ -108,47 +127,109 @@ def _looks_like_title(line: str) -> bool:
         return False
     if lowered in _GENERIC_TITLES or DOI_RE.search(line):
         return False
-    if re.match(r"^(abstract|keywords?|要旨|キーワード|received|accepted|www\.|https?://)\b", lowered):
+    if re.search(r"(?:https?://|www\.|^[\w.-]+/)", lowered):
+        return False
+    if re.match(
+        r"^(abstract|keywords?|要旨|キーワード|received|accepted|www\.|cite this article|"
+        r"subject areas|author for correspondence|electronic supplementary|downloaded from|"
+        r"one contribution|part\s+[ivxlcdm]+|figure\s+|table\s+|references|copyright|license)\b",
+        lowered,
+    ):
+        return False
+    if re.match(r"^(?:[ivxlcdm]+[.)]?\s+)?(?:introduction|conclusion|discussion)\b", lowered):
+        return False
+    if re.search(r"\b(?:department|university|school of|e-mail|email)\b", lowered):
+        return False
+    letters = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", line)
+    if letters and all(char.isupper() for char in letters):
         return False
     if re.fullmatch(r"[\d\W]+", line):
         return False
     return True
 
 
-def _guess_title_and_authors(text: str) -> tuple[str | None, tuple[str, ...]]:
-    lines = _text_lines(text)[:80]
-    title: str | None = None
-    title_index = -1
-    for index, line in enumerate(lines):
-        if _looks_like_title(line):
-            title, title_index = line, index
-            break
-    if not title:
-        return None, ()
+def _title_parts(lines: list[str], start: int) -> tuple[list[str], int]:
+    """Return a wrapped title and the index immediately after it."""
 
-    # PDF text extraction often returns a centered, wrapped title as two or
-    # more separate lines. Join title-looking continuation lines until the
-    # author line or abstract starts, so Crossref title search can recover a
-    # DOI even when the first page does not print one.
-    title_parts = [title]
-    author_index = title_index + 1
-    while author_index < len(lines) and len(title_parts) < 4:
-        line = lines[author_index]
+    parts = [lines[start]]
+    index = start + 1
+    while index < len(lines) and len(parts) < 6:
+        line = lines[index]
         lowered = line.casefold()
+        continuation = _looks_like_title(line) or (
+            4 <= len(line) <= 100
+            and not re.search(r"[\[\]]", line)
+            and not line.rstrip().endswith((".", ",", ";"))
+            and not re.fullmatch(r"[\d\W]+", line)
+            and not re.search(r"\b(?:department|university|school of|hertfordshire|united kingdom|e-mail|email)\b", lowered)
+        )
         if (
             _looks_like_author_line(line)
             or DOI_RE.search(line)
             or "@" in line
             or lowered.startswith(("abstract", "keywords", "要旨", "キーワード", "introduction"))
-            or not _looks_like_title(line)
+            or not continuation
         ):
             break
-        title_parts.append(line)
-        author_index += 1
+        parts.append(line)
+        index += 1
+    return parts, index
+
+
+def _title_candidate_score(lines: list[str], index: int, parts: list[str]) -> float:
+    """Prefer heading-like text followed by an author line over body text."""
+
+    line = lines[index]
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ一-龯ぁ-んァ-ン]+", line)
+    score = min(len(words), 10) * 0.25 + len(parts) * 1.5
+    if re.search(r"[A-ZÀ-ÖØ-Þ一-龯ぁ-んァ-ン]", line[:1]):
+        score += 1.5
+    if words and words[0].casefold() in {
+        "while", "from", "in", "to", "the", "this", "one", "it", "when", "however",
+        "we", "that", "as", "for", "and", "although", "given", "using", "based",
+    }:
+        score -= 5.5
+    if re.search(r"\[[0-9]", line) or line.rstrip().endswith((".", ",", ";")):
+        score -= 2.0
+    if re.search(r"\[[0-9]", line):
+        score -= 6.0
+    if len(words) > 14:
+        score -= 6.0
+    if len(words) > 10:
+        score -= 5.0
+    # A real title is commonly followed by an author line, including after a
+    # subtitle. This is the key signal for two-column PDFs where text order is
+    # not the same as visual order.
+    author_found = False
+    for following in lines[index + len(parts) : index + len(parts) + 4]:
+        if _looks_like_author_line(following):
+            score += 7.0
+            author_found = True
+            break
+    if not author_found:
+        score -= 6.0
+    if line[:1].islower():
+        score -= 7.0
+    return score
+
+
+def _guess_title_and_authors(text: str) -> tuple[str | None, tuple[str, ...]]:
+    # The title may be at the end of a first page (two-column extraction) or
+    # on page 3 after a scanned chapter cover, so do not assume it is first.
+    lines = _text_lines(text)[:500]
+    candidates: list[tuple[float, int, list[str], int]] = []
+    for index, line in enumerate(lines):
+        if not _looks_like_title(line):
+            continue
+        parts, after_title = _title_parts(lines, index)
+        candidates.append((_title_candidate_score(lines, index, parts), index, parts, after_title))
+    if not candidates:
+        return None, ()
+    _, _, title_parts, author_index = max(candidates, key=lambda item: (item[0], -item[1]))
     title = " ".join(title_parts)
 
     authors: tuple[str, ...] = ()
-    for line in lines[author_index : author_index + 5]:
+    for line in lines[author_index : author_index + 8]:
         if DOI_RE.search(line) or line.lower().startswith(("abstract", "keywords")):
             continue
         if re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ一-龯ぁ-んァ-ン]", line) and len(line) <= 180:
@@ -165,8 +246,26 @@ def _guess_title_and_authors(text: str) -> tuple[str | None, tuple[str, ...]]:
     return title, authors
 
 
-def extract_pdf(path: str | Path, max_pages: int = 1) -> LocalEvidence:
-    """PyMuPDFがあれば本文を読み、なければPDF bytesからDOIだけを試す。"""
+def _usable_embedded_title(value: str | None) -> str | None:
+    value = _clean(value)
+    if not value or value.casefold() in _GENERIC_TITLES:
+        return None
+    return value if _looks_like_title(value) else None
+
+
+def _usable_embedded_author(value: str | None) -> str | None:
+    value = _clean(value)
+    if not value or value.casefold() in _GENERIC_AUTHORS:
+        return None
+    # Some publishers put an internal account name in /Author. Prefer visible
+    # author text over a lone lowercase token such as ``khenglee``.
+    if len(value.split()) == 1 and value.isascii() and value.islower():
+        return None
+    return value
+
+
+def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
+    """本文先頭3ページをローカル抽出し、DOI・タイトル・著者候補を得る。"""
 
     pdf_path = Path(path)
     if pdf_path.suffix.casefold() != ".pdf":
@@ -199,8 +298,9 @@ def extract_pdf(path: str | Path, max_pages: int = 1) -> LocalEvidence:
 
     if not doi:
         doi = normalize_doi(text)
-    title = embedded_title if embedded_title and embedded_title.casefold() not in _GENERIC_TITLES else None
-    authors = _split_authors(embedded_author)
+    title = _usable_embedded_title(embedded_title)
+    authors = _split_authors(_usable_embedded_author(embedded_author))
+    embedded_metadata_used = bool(title or authors)
     guessed_title, guessed_authors = _guess_title_and_authors(text)
     if not title:
         title = guessed_title
@@ -208,7 +308,7 @@ def extract_pdf(path: str | Path, max_pages: int = 1) -> LocalEvidence:
         authors = guessed_authors
     if not title and not authors and not doi:
         notes.append("DOI・タイトル・著者候補を検出できませんでした")
-    source = "pdf-embedded" if embedded_title or embedded_author else "pdf-text" if text else "pdf-bytes"
+    source = "pdf-embedded" if embedded_metadata_used else "pdf-text" if text else "pdf-bytes"
     return LocalEvidence(
         path=pdf_path,
         doi=doi,

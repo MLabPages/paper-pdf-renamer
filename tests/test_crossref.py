@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from paper_pdf_renamer.crossref import _author_match, resolve_metadata
+from paper_pdf_renamer.crossref import _author_match, _item_metadata, resolve_metadata
 from paper_pdf_renamer.models import LocalEvidence
 
 
@@ -50,6 +50,16 @@ VOGES_ITEM = {
     "issued": {"date-parts": [[2026]]},
     "type": "proceedings-article",
 }
+
+
+def test_crossref_subtitle_is_kept_for_full_filename_title():
+    item = {
+        "title": ["Engineering Robots with Heart in Japan"],
+        "subtitle": ["The Politics of Cultural Difference in Artificial Emotional Intelligence"],
+    }
+    assert _item_metadata(item)["title"] == (
+        "Engineering Robots with Heart in Japan: The Politics of Cultural Difference in Artificial Emotional Intelligence"
+    )
 
 
 def test_doi_has_priority_and_high_confidence():

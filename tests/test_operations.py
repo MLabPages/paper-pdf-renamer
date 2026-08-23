@@ -34,6 +34,22 @@ def test_low_confidence_is_not_renamed(tmp_path: Path):
     assert source.exists()
 
 
+def test_duplicate_request_after_success_is_idempotent(tmp_path: Path):
+    source = tmp_path / "download.pdf"
+    source.write_bytes(b"pdf")
+    history = HistoryLog(tmp_path / "logs")
+    service = RenameService(lambda path: good_metadata(), history=history)
+    first = service.process(source)
+    assert first.status == "renamed"
+
+    # Simulate a second HTTP click or watcher request using the old candidate.
+    duplicate = service.make_candidate_from_metadata(source, good_metadata())
+    recovered = service.rename_candidate(duplicate)
+    assert recovered.status == "renamed"
+    assert recovered.destination_path == first.destination_path
+    assert not any(item["status"] == "failed" for item in history.read())
+
+
 def test_history_metadata_can_create_candidate_for_new_format(tmp_path: Path):
     source = tmp_path / "download.pdf"
     source.write_bytes(b"pdf")
