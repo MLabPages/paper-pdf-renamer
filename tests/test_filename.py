@@ -4,7 +4,7 @@ from paper_pdf_renamer.filename import build_filename, sanitize_component
 from paper_pdf_renamer.models import ResolvedMetadata
 
 
-def metadata(language="en", authors=("Lemon", "Kumar"), title="Understanding Customer Experience", translated=False):
+def metadata(language="en", authors=("Lemon", "Kumar", "Sato"), title="Understanding Customer Experience", translated=False):
     return ResolvedMetadata("10.1234/example", title, authors, 2016, language, "crossref:doi", 0.98, translated=translated)
 
 
@@ -16,13 +16,19 @@ def test_english_multiple_authors_and_windows_cleanup(tmp_path: Path):
 
 
 def test_japanese_multiple_authors_and_single_author(tmp_path: Path):
-    assert build_filename(metadata("ja", ("田中", "鈴木"), "ブランド経験に関する研究"), tmp_path).name == "田中ほか_2016_ブランド経験に関する研究.pdf"
+    assert build_filename(metadata("ja", ("田中", "鈴木"), "ブランド経験に関する研究"), tmp_path).name == "田中・鈴木_2016_ブランド経験に関する研究.pdf"
+    assert build_filename(metadata("ja", ("田中", "鈴木", "佐藤"), "ブランド経験に関する研究"), tmp_path).name == "田中ほか_2016_ブランド経験に関する研究.pdf"
     assert build_filename(metadata("ja", ("田中",), "ブランド経験に関する研究"), tmp_path).name == "田中_2016_ブランド経験に関する研究.pdf"
 
 
 def test_author_label_uses_family_name(tmp_path: Path):
-    assert build_filename(metadata(authors=("Katherine Lemon", "V. Kumar")), tmp_path).name.startswith("Lemon et al._2016_")
-    assert build_filename(metadata(authors=("Lemon, Katherine", "Kumar, V.")), tmp_path).name.startswith("Lemon et al._2016_")
+    assert build_filename(metadata(authors=("Katherine Lemon", "V. Kumar")), tmp_path).name.startswith("Lemon & Kumar_2016_")
+    assert build_filename(metadata(authors=("Lemon, Katherine", "Kumar, V.")), tmp_path).name.startswith("Lemon & Kumar_2016_")
+
+
+def test_english_two_authors_use_ampersand(tmp_path: Path):
+    result = build_filename(metadata(authors=("Katsuno", "White"), title="Engineering Robots"), tmp_path)
+    assert result.name == "Katsuno & White_2016_Engineering Robots.pdf"
 
 
 def test_custom_format_template(tmp_path: Path):

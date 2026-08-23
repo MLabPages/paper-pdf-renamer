@@ -72,4 +72,4 @@ def test_gui_reformats_pdf_from_saved_history(tmp_path: Path) -> None:
     assert state.reformat_history() == 1
     candidate = state.snapshot()["candidates"][0]
     assert candidate["status"] == "ready"
-    assert candidate["destination_path"].endswith("Schmitt et al. (1999). - A Safe Paper.pdf")
+    assert candidate["destination_path"].endswith("Schmitt & Lemon (1999). - A Safe Paper.pdf")

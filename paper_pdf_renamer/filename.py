@@ -27,6 +27,25 @@ def _author_label(value: str) -> str:
     return parts[-1] if parts else value
 
 
+def _authors_label(metadata: ResolvedMetadata) -> str:
+    """著者数に応じたファイル名用の著者表記を作る。"""
+
+    authors = tuple(_author_label(author) for author in metadata.authors if author)
+    if not authors:
+        return _author_label(metadata.first_author or "")
+    if (metadata.language or "en").casefold().startswith("ja"):
+        if len(authors) >= 3:
+            return f"{authors[0]}ほか"
+        if len(authors) == 2:
+            return f"{authors[0]}・{authors[1]}"
+        return authors[0]
+    if len(authors) >= 3:
+        return f"{authors[0]} et al."
+    if len(authors) == 2:
+        return f"{authors[0]} & {authors[1]}"
+    return authors[0]
+
+
 def sanitize_component(value: str, replacements: dict[str, str] | None = None) -> str:
     replacements = replacements or {":": "-", "/": "-", "\\": "-"}
     value = unicodedata.normalize("NFKC", value)
@@ -80,11 +99,7 @@ def build_filename(
     if max_title_length < 10:
         raise ValueError("タイトル最大長は10以上にしてください")
     format_template = validate_format_template(format_template)
-    language = (metadata.language or "en").casefold()  # 不確かな場合は安全側に英語形式
-    suffix = "ほか" if language.startswith("ja") and len(metadata.authors) >= 2 else "et al." if len(metadata.authors) >= 2 else ""
-    author = _author_label(metadata.first_author)
-    if suffix:
-        author = f"{author}{suffix}" if suffix == "ほか" else f"{author} {suffix}"
+    author = _authors_label(metadata)
     year = str(metadata.year)
     directory_path = Path(directory) if directory else (source.parent if source else Path.cwd())
     values = {

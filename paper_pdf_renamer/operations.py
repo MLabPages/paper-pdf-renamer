@@ -60,7 +60,9 @@ def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
     language = str(record.get("language") or "").strip() or None
     if not authors:
         multiple = " et al." in old_names.casefold() or "ほか" in old_names
-        authors = (first_author, "履歴上の著者") if multiple else (first_author,)
+        # 著者配列がない古い履歴で人数を推測できない場合は、過去の
+        # ``et al.`` / ``ほか`` 表記を維持し、2名用の表記へ誤変換しない。
+        authors = (first_author, "履歴上の著者1", "履歴上の著者2") if multiple else (first_author,)
         if language is None and "ほか" in old_names:
             language = "ja"
     if not authors:
