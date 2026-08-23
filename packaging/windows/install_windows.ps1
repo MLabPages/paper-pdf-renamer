@@ -29,5 +29,18 @@ if (-not $SkipDesktop) { $shortcutArgs += "--desktop" }
 & $python @shortcutArgs
 if ($LASTEXITCODE -ne 0) { throw "スタートメニュー登録に失敗しました。" }
 
+# 既存設定が自動起動ONなら、Windows起動時もPython版ではなく今回のEXEを使う。
+$settingsPath = Join-Path $env:APPDATA "paper-pdf-renamer\settings.json"
+if (Test-Path -LiteralPath $settingsPath) {
+    $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    New-Item -Path $runKey -Force | Out-Null
+    if ($settings.auto_start -eq $true) {
+        Set-ItemProperty -Path $runKey -Name "PaperPdfRenamer" -Value ('"{0}"' -f $installedExe)
+    } else {
+        Remove-ItemProperty -Path $runKey -Name "PaperPdfRenamer" -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host "インストール完了: $installedExe"
 Write-Host "スタートメニューに「論文PDFファイル名整理」を登録しました。"

@@ -18,6 +18,7 @@ from uuid import uuid4
 from .config import Settings, validate_format_template
 from .crossref import CrossrefClient, resolve_metadata
 from .history import HistoryLog
+from .instance import SingleInstanceLock, clear_server_state, read_server_port, write_server_state
 from .models import RenameCandidate
 from .operations import BatchScanner, PollingWatcher, RenameService, metadata_from_history
 from .pdf_extract import extract_pdf
@@ -40,6 +41,7 @@ REASON_LABELS = {
     "non-paper-type": "論文以外の種別です",
     "low-confidence": "信頼度が基準未満です",
     "already-correct-name": "すでに候補名です",
+    "source-file-missing": "別の処理で先に変更された可能性があります",
 }
 
 
@@ -387,8 +389,10 @@ let lastServerSettings = null;
 async function api(url, options={}) { const response = await fetch(url, {headers:{"Content-Type":"application/json"}, ...options}); const data = await response.json(); if (!response.ok) throw new Error(data.error || "通信に失敗しました"); return data; }
 function cell(row, value, className="") { const td = document.createElement("td"); td.textContent = value ?? "—"; if (className) td.className = className; row.appendChild(td); return td; }
 function formSettingsSnapshot() { return {folders:$("folders").value,recursive:$("recursive").checked,format:$("format").value,maxTitle:$("max-title").value,confidence:$("confidence").value,mailto:$("mailto").value,autoStart:$("auto-start").checked}; }
+function selectedCandidateIds() { return new Set([...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id)); }
 function render(state) {
   const s = state.settings;
+  const selectedIds = selectedCandidateIds();
   const userChanged = settingsDirty || (lastServerSettings !== null && JSON.stringify(formSettingsSnapshot()) !== JSON.stringify(lastServerSettings));
   if (!userChanged) {
     $("folders").value = s.watch_folders.join("\n"); $("recursive").checked = s.recursive; $("format").value = s.format_template;
@@ -400,7 +404,7 @@ function render(state) {
   $("message").textContent = state.message || "";
   const candidates = $("candidates"); candidates.replaceChildren();
   if (!state.candidates.length) { const row = candidates.insertRow(); const td = row.insertCell(); td.colSpan = 6; td.className = "empty"; td.textContent = "候補はありません。既存PDFなら「既存PDFをスキャン」または「履歴から再整理」、新規PDFなら「新しいPDFを自動監視」を使ってください。"; }
-  for (const item of state.candidates.slice().reverse()) { const row = candidates.insertRow(); const check = row.insertCell(); if (item.status === "ready") { const input = document.createElement("input"); input.type = "checkbox"; input.dataset.id = item.id; check.appendChild(input); } cell(row, item.status_label, item.status); cell(row, item.source_path && item.source_path.split(/[\\/]/).pop()); cell(row, item.destination_path && item.destination_path.split(/[\\/]/).pop()); cell(row, `${Math.round(Number(item.metadata.confidence || 0) * 100)}%`); cell(row, item.reason_text || "—", item.status === "held" ? "hold" : item.status === "failed" ? "failed" : ""); }
+  for (const item of state.candidates.slice().reverse()) { const row = candidates.insertRow(); const check = row.insertCell(); if (item.status === "ready") { const input = document.createElement("input"); input.type = "checkbox"; input.dataset.id = item.id; input.checked = selectedIds.has(item.id); check.appendChild(input); } cell(row, item.status_label, item.status); cell(row, item.source_path && item.source_path.split(/[\\/]/).pop()); cell(row, item.destination_path && item.destination_path.split(/[\\/]/).pop()); cell(row, `${Math.round(Number(item.metadata.confidence || 0) * 100)}%`); cell(row, item.reason_text || "—", item.status === "held" ? "hold" : item.status === "failed" ? "failed" : ""); }
   const history = $("history"); history.replaceChildren();
   if (!state.history.length) { const row = history.insertRow(); const td = row.insertCell(); td.colSpan = 7; td.className = "empty"; td.textContent = "まだ処理履歴はありません。"; }
   for (const item of state.history.slice().reverse()) { const row = history.insertRow(); cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename); cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title); cell(row, `${Math.round(Number(item.confidence || 0) * 100)}%`); }
@@ -509,23 +513,38 @@ def _available_port(preferred: int) -> int:
 
 
 def run_server(port: int = 8766, open_browser: bool = True) -> int:
+    instance_lock = SingleInstanceLock()
+    if not instance_lock.acquire():
+        existing_port = read_server_port() or port
+        url = f"http://127.0.0.1:{existing_port}/"
+        if open_browser:
+            threading.Timer(0.35, lambda: webbrowser.open(url)).start()
+        print(f"論文PDFファイル名整理は起動済みです: {url}")
+        return 0
+
     state = AppState(Settings.load())
-    if state.settings.monitor_enabled:
-        state.start_monitor()
-    handler = type("PaperPdfRenamerHandler", (Handler,), {"state": state})
-    actual_port = _available_port(port)
-    server = ThreadingHTTPServer(("127.0.0.1", actual_port), handler)
-    url = f"http://127.0.0.1:{actual_port}/"
-    if open_browser:
-        threading.Timer(0.35, lambda: webbrowser.open(url)).start()
-    print(f"論文PDFファイル名整理: {url}")
+    server: ThreadingHTTPServer | None = None
+    actual_port: int | None = None
     try:
+        if state.settings.monitor_enabled:
+            state.start_monitor()
+        handler = type("PaperPdfRenamerHandler", (Handler,), {"state": state})
+        actual_port = _available_port(port)
+        server = ThreadingHTTPServer(("127.0.0.1", actual_port), handler)
+        write_server_state(actual_port)
+        url = f"http://127.0.0.1:{actual_port}/"
+        if open_browser:
+            threading.Timer(0.35, lambda: webbrowser.open(url)).start()
+        print(f"論文PDFファイル名整理: {url}")
         server.serve_forever()
     except KeyboardInterrupt:
         return 130
     finally:
         state.stop_monitor(persist=False)
-        server.server_close()
+        if server is not None:
+            server.server_close()
+        clear_server_state(actual_port)
+        instance_lock.release()
     return 0
 
 
