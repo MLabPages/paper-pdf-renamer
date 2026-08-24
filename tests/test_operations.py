@@ -97,6 +97,25 @@ def test_legacy_history_without_author_list_is_held_instead_of_faking_author(tmp
     assert "author-count-unknown" in candidate.reasons
 
 
+def test_legacy_history_placeholder_author_is_not_used_as_real_name(tmp_path: Path):
+    source = tmp_path / "Jiang et al. (2026).pdf"
+    source.write_bytes(b"pdf")
+    restored = metadata_from_history({
+        "new_filename": source.name,
+        "new_path": str(source),
+        "title": "A Safe Paper",
+        "first_author": "Jiang",
+        "authors": ["Jiang", "履歴上の著者"],
+        "year": 2026,
+        "language": "en",
+        "metadata_source": "crossref:doi",
+        "confidence": 0.99,
+    })
+    assert restored is not None
+    assert restored.authors == ("Jiang",)
+    assert "author-count-unknown" in restored.reasons
+
+
 def test_batch_scan_is_preview_only_until_explicit_approval(tmp_path: Path):
     first = tmp_path / "one.pdf"
     second = tmp_path / "two.pdf"

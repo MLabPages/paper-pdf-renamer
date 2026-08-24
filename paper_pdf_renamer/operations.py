@@ -56,10 +56,15 @@ def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
 
     raw_authors = record.get("authors")
     authors = tuple(str(value).strip() for value in raw_authors if str(value).strip()) if isinstance(raw_authors, (list, tuple)) else ()
+    has_placeholder_author = any(author.startswith("履歴上の著者") for author in authors)
+    if has_placeholder_author:
+        authors = tuple(author for author in authors if not author.startswith("履歴上の著者"))
     old_names = " ".join(str(record.get(key) or "") for key in ("original_filename", "new_filename"))
     language = str(record.get("language") or "").strip() or None
     historical_reasons: list[str] = []
     multiple_marker = " et al." in old_names.casefold() or "ほか" in old_names
+    if has_placeholder_author:
+        historical_reasons.append("author-count-unknown")
     if not authors:
         authors = (first_author,)
         if multiple_marker:
