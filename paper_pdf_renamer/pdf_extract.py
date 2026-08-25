@@ -94,11 +94,36 @@ def _split_authors(value: str | None) -> tuple[str, ...]:
     return tuple(parts[:20])
 
 
+_AUTHOR_NAME_STOP_WORDS = {
+    "across", "and", "as", "brand", "case", "consumer", "dimensions", "experience",
+    "for", "from", "in", "items", "measures", "of", "on", "organizations", "research",
+    "service", "the", "this", "to", "with",
+}
+
+
+def _looks_like_person_name(value: str) -> bool:
+    """Detect a short visible author name without classifying title lines as authors."""
+
+    if not value or len(value) > 120:
+        return False
+    if re.search(r"[@]|\b(?:department|university|school of|e-mail|email)\b", value, re.IGNORECASE):
+        return False
+    cleaned = re.sub(r"[0-9¹²³⁴⁵⁶⁷⁸⁹⁰*†‡]+", " ", value)
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", cleaned)
+    if not 2 <= len(words) <= 5:
+        return False
+    if any(word.casefold() in _AUTHOR_NAME_STOP_WORDS for word in words):
+        return False
+    return all(word[:1].isupper() for word in words)
+
+
 def _looks_like_author_line(value: str) -> bool:
     """Detect common author-line markers without treating a wrapped title as authors."""
     if re.search(r"\b(?:department|university|school of|hertfordshire|united kingdom|e-mail|email)\b", value, re.IGNORECASE):
         return False
     if re.search(r"\bet\s+al\.?\b", value, re.IGNORECASE) and not re.search(r"[\[\]]", value):
+        return True
+    if _looks_like_person_name(value):
         return True
     if re.search(r"\band\b", value, re.IGNORECASE):
         capitalized_words = re.findall(r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'-]*\b", value)
@@ -183,6 +208,18 @@ def _title_parts(lines: list[str], start: int) -> tuple[list[str], int]:
     while index < len(lines) and len(parts) < 6:
         line = lines[index]
         lowered = line.casefold()
+        author_line = _looks_like_author_line(line)
+        if author_line:
+            letters = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", line)
+            all_caps_name = bool(letters) and all(char.isupper() for char in letters)
+            next_line_is_author = index + 1 < len(lines) and _looks_like_author_line(lines[index + 1])
+            # A title-cased final subtitle line such as "Emotional
+            # Intelligence" may itself look like a two-word name. If it is
+            # immediately followed by the real author line, keep it in the
+            # title; all-caps name lines remain author boundaries.
+            has_author_markers = bool(re.search(r"[0-9¹²³⁴⁵⁶⁷⁸⁹⁰]", line) or "," in line)
+            if not all_caps_name and next_line_is_author and not has_author_markers:
+                author_line = False
         continuation = _looks_like_title(line) or (
             4 <= len(line) <= 100
             and not re.search(r"[\[\]]", line)
@@ -191,10 +228,13 @@ def _title_parts(lines: list[str], start: int) -> tuple[list[str], int]:
             and not re.search(r"\b(?:department|university|school of|hertfordshire|united kingdom|e-mail|email)\b", lowered)
         )
         if (
-            _looks_like_author_line(line)
+            author_line
             or DOI_RE.search(line)
             or "@" in line
-            or lowered.startswith(("abstract", "keywords", "要旨", "キーワード", "introduction"))
+            or lowered.startswith((
+                "abstract", "keywords", "要旨", "キーワード", "introduction", "received", "accepted",
+                "cite this article", "downloaded from", "copyright", "journal of", "vol.", "volume",
+            ))
             or not continuation
         ):
             break
@@ -273,6 +313,35 @@ def _guess_title_and_authors(text: str) -> tuple[str | None, tuple[str, ...]]:
     return title, authors
 
 
+def _extract_bibliographic_hints(text: str, path: Path | None = None) -> tuple[str | None, str | None, str | None]:
+    """Extract optional volume/issue/page hints without treating them as proof."""
+
+    volume = issue = pages = None
+    volume_match = re.search(r"\bVol(?:ume)?\.?\s*(\d+)", text, re.IGNORECASE)
+    issue_match = re.search(r"\b(?:No\.?|Issue)\s*(\d+)", text, re.IGNORECASE)
+    citation_match = re.search(
+        r"\(\s*(?:19|20)\d{2}\s*\)\s*(\d+)\s*,\s*(\d{1,5}(?:\s*[-–—]\s*\d{1,5})?)",
+        text,
+    )
+    page_match = re.search(r"\b(?:pp?\.?|pages?)\s*(\d{1,5}(?:\s*[-–—]\s*\d{1,5})?)", text, re.IGNORECASE)
+    if volume_match:
+        volume = volume_match.group(1)
+    if issue_match:
+        issue = issue_match.group(1)
+    if citation_match:
+        volume = volume or citation_match.group(1)
+        pages = citation_match.group(2).replace(" ", "")
+    if page_match:
+        pages = pages or page_match.group(1).replace(" ", "")
+    if path is not None:
+        filename_match = re.fullmatch(r"(\d+)-(\d+)-(\d+)", path.stem)
+        if filename_match:
+            volume = volume or filename_match.group(1)
+            issue = issue or filename_match.group(2)
+            pages = pages or filename_match.group(3)
+    return volume, issue, pages
+
+
 def _usable_embedded_title(value: str | None) -> str | None:
     value = _clean(value)
     if not value or value.casefold() in _GENERIC_TITLES:
@@ -338,6 +407,7 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
     source = "pdf-embedded" if embedded_metadata_used else "pdf-text" if text else "pdf-bytes"
     document_language = detect_document_language(text)
     language = document_language or normalize_language(detect_language(title, *authors))
+    volume, issue, pages = _extract_bibliographic_hints(text, pdf_path)
     return LocalEvidence(
         path=pdf_path,
         doi=doi,
@@ -348,4 +418,7 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
         metadata_source=source,
         notes=tuple(notes),
         translation_marker=has_translation_marker(pdf_path),
+        volume=volume,
+        issue=issue,
+        pages=pages,
     )

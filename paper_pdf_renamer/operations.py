@@ -30,6 +30,7 @@ def _metadata_log(metadata: ResolvedMetadata) -> dict[str, object]:
         "paper_type": metadata.paper_type,
         "document_language": metadata.document_language,
         "translated": metadata.translated,
+        "warnings": metadata.warnings,
     }
 
 
@@ -85,6 +86,13 @@ def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
     else:
         reasons = ()
     reasons = tuple(dict.fromkeys([*reasons, *historical_reasons]))
+    warnings_value = record.get("warnings")
+    if isinstance(warnings_value, str):
+        warnings = tuple(value.strip() for value in warnings_value.split(";") if value.strip())
+    elif isinstance(warnings_value, (list, tuple)):
+        warnings = tuple(str(value) for value in warnings_value if str(value).strip())
+    else:
+        warnings = ()
     return ResolvedMetadata(
         doi=str(record.get("doi") or "").strip() or None,
         title=title,
@@ -99,6 +107,7 @@ def metadata_from_history(record: dict[str, Any]) -> ResolvedMetadata | None:
         translated=bool(record.get("translated"))
         or has_translation_marker(record.get("original_filename"))
         or has_translation_marker(record.get("new_filename")),
+        warnings=warnings,
     )
 
 
@@ -274,6 +283,7 @@ class BatchScanner:
                 paper_type=data.get("paper_type"),
                 document_language=data.get("document_language"),
                 translated=bool(data.get("translated")),
+                warnings=tuple(data.get("warnings", [])),
             )
             result.append(RenameCandidate(
                 source_path=Path(item["source_path"]),

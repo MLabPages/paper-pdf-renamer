@@ -18,6 +18,9 @@ class LocalEvidence:
     metadata_source: str = "none"
     notes: tuple[str, ...] = ()
     translation_marker: bool = False
+    volume: str | None = None
+    issue: str | None = None
+    pages: str | None = None
 
     @property
     def first_author(self) -> str | None:
@@ -40,6 +43,7 @@ class ResolvedMetadata:
     local: LocalEvidence | None = None
     document_language: str | None = None
     translated: bool = False
+    warnings: tuple[str, ...] = ()
 
     @property
     def first_author(self) -> str | None:
@@ -63,6 +67,7 @@ class ResolvedMetadata:
             "paper_type": self.paper_type,
             "document_language": self.document_language,
             "translated": self.translated,
+            "warnings": list(self.warnings),
         }
 
 

@@ -26,7 +26,7 @@ class HistoryLog:
         item = {field: record.get(field) for field in LOG_FIELDS}
         # JSONLには、後から同じ書誌情報で再生成できる補助情報も保持する。
         # 既存CSVの列構成は変えず、古い履歴との互換性を優先する。
-        for field in ("authors", "language", "paper_type", "document_language", "translated"):
+        for field in ("authors", "language", "paper_type", "document_language", "translated", "warnings"):
             if field in record:
                 item[field] = record[field]
         item["timestamp"] = item["timestamp"] or datetime.now(timezone.utc).isoformat()

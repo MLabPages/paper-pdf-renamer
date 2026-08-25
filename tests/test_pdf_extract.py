@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from paper_pdf_renamer.pdf_extract import (
+    _extract_bibliographic_hints,
     _guess_title_and_authors,
     detect_document_language,
     extract_pdf,
@@ -31,6 +32,41 @@ def test_wrapped_title_and_affiliated_author_line_are_recovered():
     title, authors = _guess_title_and_authors(text)
     assert title == "Robot Continuity across Embodiments: Portability, Identity and Migration of Robotic Systems"
     assert authors == ("Weston Laity1", "Patrick Holthaus2", "Kerstin Haring1")
+
+
+def test_title_parser_stops_before_visible_author_profile_lines():
+    text = """
+    Brand experiences in service
+    organizations: Exploring the
+    individual effects of brand
+    experience dimensions
+    Received (in revised form): 19th March 2012
+    Herbjørn Nysveen
+    is a Professor in marketing at Norwegian School of Economics.
+    ABSTRACT Brand experience has been conceptualized.
+    """
+    title, authors = _guess_title_and_authors(text)
+    assert title == "Brand experiences in service organizations: Exploring the individual effects of brand experience dimensions"
+    assert authors == ("Herbjørn Nysveen",)
+
+
+def test_question_title_with_uppercase_authors_is_recovered():
+    text = """
+    Do Reverse-Worded Items Confound Measures
+    in Cross-Cultural Consumer Research? The
+    Case of the Material Values Scale
+    NANCY WONG
+    ARIC RINDFLEISCH
+    JAMES E. BURROUGHS*
+    Most measures of consumer behavior have been developed.
+    """
+    title, authors = _guess_title_and_authors(text)
+    assert title == "Do Reverse-Worded Items Confound Measures in Cross-Cultural Consumer Research? The Case of the Material Values Scale"
+    assert authors[0] == "NANCY WONG"
+
+
+def test_bibliographic_hints_can_use_filename_fingerprint():
+    assert _extract_bibliographic_hints("", Path("30-1-72.pdf")) == ("30", "1", "72")
 
 
 def test_title_is_recovered_after_publisher_sidebar_and_citation():

@@ -46,10 +46,17 @@ REASON_LABELS = {
     "source-file-missing": "別の処理で先に変更された可能性があります",
     "added-while-stopped": "監視停止中に追加されたPDFです。確認後に実行してください",
 }
+WARNING_LABELS = {
+    "author-mismatch": "著者は補助照合で不一致ですが、DOI・タイトル等を優先しました",
+}
 
 
 def _reason_text(reasons: list[str] | tuple[str, ...]) -> str:
     return "、".join(REASON_LABELS.get(reason, reason) for reason in reasons)
+
+
+def _warning_text(warnings: list[str] | tuple[str, ...]) -> str:
+    return "、".join(WARNING_LABELS.get(warning, warning) for warning in warnings)
 
 
 def _candidate_json(candidate_id: str, candidate: RenameCandidate) -> dict[str, Any]:
@@ -57,6 +64,7 @@ def _candidate_json(candidate_id: str, candidate: RenameCandidate) -> dict[str, 
     value["id"] = candidate_id
     value["status_label"] = STATUS_LABELS.get(candidate.status, candidate.status)
     value["reason_text"] = _reason_text(candidate.reasons)
+    value["warning_text"] = _warning_text(candidate.metadata.warnings)
     return value
 
 
@@ -347,6 +355,7 @@ th, td { text-align: left; padding: 8px 9px; border-bottom: 1px solid #e2e8f0; v
 th { background: #f8fafc; white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
 .hold { color: #9a6700; }
+.warning { color: #9a6700; }
 .failed { color: #b42318; }
 .ready { color: #115c34; font-weight: 600; }
 .empty { color: #64748b; padding: 16px 8px; }
@@ -385,7 +394,7 @@ tr:last-child td { border-bottom: 0; }
 </section>
 <section>
 <h2>リネーム候補（スキャン結果／要確認一覧）</h2>
-<p class="help">スキャンでは変更しません。状態が「候補」の行にチェックを入れ、変更前と変更後を確認してから実行してください。</p>
+<p class="help">スキャンでは変更しません。状態が「候補」の行にチェックを入れ、変更前と変更後を確認してから実行してください。警告は補助情報であり、照合の主根拠が一致していれば実行できます。</p>
 <div class="actions"><button id="apply">チェックした候補をリネーム</button></div>
 <div class="table-wrap"><table><thead><tr><th></th><th>状態</th><th>変更前</th><th>変更後候補</th><th>信頼度</th><th>理由</th></tr></thead><tbody id="candidates"></tbody></table></div>
 </section>
@@ -418,7 +427,7 @@ function render(state) {
   $("message").textContent = state.message || "";
   const candidates = $("candidates"); candidates.replaceChildren();
   if (!state.candidates.length) { const row = candidates.insertRow(); const td = row.insertCell(); td.colSpan = 6; td.className = "empty"; td.textContent = "候補はありません。既存PDFなら「既存PDFをスキャン」または「履歴から再整理」、新規PDFなら「新しいPDFを自動監視」を使ってください。"; }
-  for (const item of state.candidates.slice().reverse()) { const row = candidates.insertRow(); const check = row.insertCell(); if (item.status === "ready") { const input = document.createElement("input"); input.type = "checkbox"; input.dataset.id = item.id; input.checked = selectedIds.has(item.id); check.appendChild(input); } cell(row, item.status_label, item.status); cell(row, item.source_path && item.source_path.split(/[\\/]/).pop()); cell(row, item.destination_path && item.destination_path.split(/[\\/]/).pop()); cell(row, `${Math.round(Number(item.metadata.confidence || 0) * 100)}%`); cell(row, item.reason_text || "—", item.status === "held" ? "hold" : item.status === "failed" ? "failed" : ""); }
+  for (const item of state.candidates.slice().reverse()) { const row = candidates.insertRow(); const check = row.insertCell(); if (item.status === "ready") { const input = document.createElement("input"); input.type = "checkbox"; input.dataset.id = item.id; input.checked = selectedIds.has(item.id); check.appendChild(input); } cell(row, item.status_label, item.status); cell(row, item.source_path && item.source_path.split(/[\\/]/).pop()); cell(row, item.destination_path && item.destination_path.split(/[\\/]/).pop()); cell(row, `${Math.round(Number(item.metadata.confidence || 0) * 100)}%`); const detail = item.reason_text || item.warning_text || "—"; const detailClass = item.status === "held" ? "hold" : item.status === "failed" ? "failed" : item.warning_text ? "warning" : ""; cell(row, detail, detailClass); }
   const history = $("history"); history.replaceChildren();
   if (!state.history.length) { const row = history.insertRow(); const td = row.insertCell(); td.colSpan = 7; td.className = "empty"; td.textContent = "まだ処理履歴はありません。"; }
   for (const item of state.history.slice().reverse()) { const row = history.insertRow(); cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename); cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title); cell(row, `${Math.round(Number(item.confidence || 0) * 100)}%`); }

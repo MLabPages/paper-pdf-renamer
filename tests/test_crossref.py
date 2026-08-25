@@ -71,11 +71,38 @@ def test_doi_has_priority_and_high_confidence():
     assert result.year == 2016
 
 
-def test_mismatched_author_is_held():
+def test_mismatched_author_is_warning_when_doi_and_title_match():
     fake = FakeCrossref(ITEM)
     result = resolve_metadata(LocalEvidence(Path("a.pdf"), "10.5555/abc", "Understanding Customer Experience", ("Smith",)), fake)
-    assert not result.safe_to_rename
-    assert "author-mismatch" in result.reasons
+    assert result.safe_to_rename
+    assert "author-mismatch" not in result.reasons
+    assert "author-mismatch" in result.warnings
+
+
+def test_title_search_can_use_bibliographic_hints_with_imperfect_title():
+    item = {
+        **ITEM,
+        "title": ["Understanding Customer Experience in Context"],
+        "volume": "12",
+        "issue": "3",
+        "page": "44-60",
+    }
+    fake = FakeCrossref(item)
+    result = resolve_metadata(
+        LocalEvidence(
+            Path("12-3-44.pdf"),
+            None,
+            "Understanding Customer Experience in Context for Teams",
+            (),
+            volume="12",
+            issue="3",
+            pages="44",
+        ),
+        fake,
+    )
+    assert result.source == "crossref:title"
+    assert result.doi == "10.5555/abc"
+    assert result.safe_to_rename
 
 
 def test_title_search_can_recover_doi_but_low_evidence_remains_visible():

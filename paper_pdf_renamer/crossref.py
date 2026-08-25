@@ -63,6 +63,7 @@ def _item_metadata(item: dict[str, Any]) -> dict[str, Any]:
     subtitle = (item.get("subtitle") or [None])[0]
     if title and subtitle:
         title = f"{title}: {subtitle}"
+    container_titles = item.get("container-title") or []
     return {
         "doi": normalize_doi(item.get("DOI")),
         "title": title,
@@ -70,7 +71,39 @@ def _item_metadata(item: dict[str, Any]) -> dict[str, Any]:
         "year": _date_year(item),
         "language": item.get("language"),
         "type": item.get("type"),
+        "container_title": container_titles[0] if container_titles else None,
+        "volume": str(item.get("volume")) if item.get("volume") is not None else None,
+        "issue": str(item.get("issue")) if item.get("issue") is not None else None,
+        "pages": str(item.get("page")) if item.get("page") else None,
     }
+
+
+def _first_page(value: str | None) -> str | None:
+    match = re.search(r"\d+", value or "")
+    return match.group(0) if match else None
+
+
+def _bibliographic_matches(evidence: LocalEvidence, data: dict[str, Any]) -> int:
+    """Count independent local-vs-Crossref hints used to rescue imperfect titles."""
+
+    matches = 0
+    if evidence.year and data.get("year") and evidence.year == data["year"]:
+        matches += 1
+    if evidence.volume and data.get("volume") and str(evidence.volume) == str(data["volume"]):
+        matches += 1
+    if evidence.issue and data.get("issue") and str(evidence.issue) == str(data["issue"]):
+        matches += 1
+    local_page = _first_page(evidence.pages)
+    remote_page = _first_page(data.get("pages"))
+    if local_page and remote_page and local_page == remote_page:
+        matches += 1
+    return matches
+
+
+def _candidate_rank(evidence: LocalEvidence, item: dict[str, Any]) -> tuple[float, int]:
+    data = _item_metadata(item)
+    matches = _bibliographic_matches(evidence, data)
+    return title_similarity(evidence.title, data["title"]) + matches * 0.02, matches
 
 
 class CrossrefClient:
@@ -106,6 +139,7 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
     item: dict[str, Any] | None = None
     source = evidence.metadata_source
     reasons: list[str] = []
+    warnings: list[str] = []
     query_doi = evidence.doi
 
     if query_doi:
@@ -117,8 +151,11 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
     elif evidence.title:
         try:
             results = client.search_title(evidence.title)
-            ranked = sorted(results, key=lambda candidate: title_similarity(evidence.title, _item_metadata(candidate)["title"]), reverse=True)
-            if ranked and title_similarity(evidence.title, _item_metadata(ranked[0])["title"]) >= 0.90:
+            ranked = sorted(results, key=lambda candidate: _candidate_rank(evidence, candidate), reverse=True)
+            best = _item_metadata(ranked[0]) if ranked else None
+            similarity = title_similarity(evidence.title, best["title"]) if best else 0.0
+            bibliographic_matches = _bibliographic_matches(evidence, best) if best else 0
+            if ranked and (similarity >= 0.90 or (similarity >= 0.80 and bibliographic_matches >= 2)):
                 item = ranked[0]
                 source = "crossref:title"
             else:
@@ -137,6 +174,7 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
         language = metadata_language or detect_language(title, *authors) or document_language
         paper_type = data["type"]
         similarity = title_similarity(evidence.title, title) if evidence.title else 1.0
+        bibliographic_matches = _bibliographic_matches(evidence, data)
         author_ok = _author_match(evidence.first_author, authors) if evidence.first_author else True
         translated = bool(
             source == "crossref:doi"
@@ -145,7 +183,9 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
         if evidence.title and similarity < 0.85 and not translated:
             reasons.append("title-mismatch")
         if evidence.first_author and not author_ok and not translated:
-            reasons.append("author-mismatch")
+            # A PDF's first-page extraction is fragile. If DOI/title metadata
+            # agrees, keep this discrepancy visible without blocking the rename.
+            warnings.append("author-mismatch")
         if not doi:
             reasons.append("doi-missing")
         if paper_type and paper_type not in {"journal-article", "proceedings-article", "book-chapter", "book-part", "posted-content"}:
@@ -157,8 +197,8 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
             confidence += 0.04
         if evidence.first_author and author_ok:
             confidence += 0.03
-        if evidence.first_author and not author_ok and not translated:
-            confidence -= 0.45
+        if bibliographic_matches >= 2:
+            confidence += 0.04
         if evidence.title and similarity < 0.85 and not translated:
             confidence -= 0.35
         if source == "crossref:title":
@@ -201,4 +241,5 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
         local=evidence,
         document_language=document_language,
         translated=translated,
+        warnings=tuple(dict.fromkeys(warnings)),
     )
