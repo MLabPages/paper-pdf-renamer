@@ -237,3 +237,20 @@ def test_openalex_can_verify_doi_less_work_with_title_author_and_year():
     assert result.source == "openalex:title"
     assert result.authors == ("Schifferstein", "Zwartkruis-Pelgrim")
     assert "doi-missing-verified-by-openalex" in result.warnings
+
+
+def test_filename_ja_marker_is_kept_when_matched_by_title_search():
+    fake = FakeCrossref(LAITY_ITEM)
+    result = resolve_metadata(
+        LocalEvidence(
+            Path("[ja] Laity (2025).pdf"),
+            None,
+            "Robot Continuity across Embodiments: Portability, Identity and Migration of Robotic Systems",
+            ("Weston Laity1", "Patrick Holthaus2", "Kerstin Haring1"),
+            translation_marker=True,
+        ),
+        fake,
+    )
+    assert result.source == "crossref:title"
+    assert result.translated
+    assert result.safe_to_rename

@@ -8,6 +8,15 @@ from .config import FORMAT_TEMPLATE, validate_format_template
 from .models import ResolvedMetadata
 
 INVALID_WINDOWS = re.compile(r"[\\/:*?\"<>|]")
+JA_MARKER = "[ja]"
+# 翻訳版の印は、Readableなどで手動で付けた先頭表記に合わせて先頭に置く。
+_JA_MARKER_PREFIX_RE = re.compile(
+    r"^[\s._()\[\]-]*(?:ja|jpn|日本語|翻訳)(?:$|[\s._()\[\]-])", re.IGNORECASE
+)
+# 旧版が末尾に付けた ``... [ja].pdf`` を二重に付けないため残す。
+_JA_MARKER_SUFFIX_RE = re.compile(
+    r"(?:^|[\s._()\[\]-])(?:ja|jpn|日本語|翻訳)[\s._()\[\]-]*$", re.IGNORECASE
+)
 RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
@@ -120,8 +129,8 @@ def build_filename(
             rendered += ".pdf"
         if metadata.translated:
             stem, extension = rendered[:-4], rendered[-4:]
-            if not re.search(r"(?:^|[\s._()\[\]-])(?:ja|jpn|日本語|翻訳)$", stem, re.IGNORECASE):
-                rendered = f"{stem.rstrip()} [ja]{extension}"
+            if not _JA_MARKER_PREFIX_RE.match(stem) and not _JA_MARKER_SUFFIX_RE.search(stem):
+                rendered = f"{JA_MARKER} {stem.lstrip()}{extension}"
         filename = sanitize_component(rendered)
         if len(str(directory_path / filename)) <= max_path_length:
             break

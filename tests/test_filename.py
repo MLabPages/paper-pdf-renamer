@@ -45,13 +45,28 @@ def test_custom_format_template_adds_pdf_extension(tmp_path: Path):
     assert result.name.endswith(".pdf")
 
 
-def test_translated_pdf_gets_ja_suffix_without_changing_original_format(tmp_path: Path):
+def test_translated_pdf_gets_ja_prefix_without_changing_original_format(tmp_path: Path):
     result = build_filename(
         metadata(translated=True),
         tmp_path,
         format_template="{author} ({year}). - {title}.pdf",
     )
-    assert result.name == "Lemon et al. (2016). - Understanding Customer Experience [ja].pdf"
+    assert result.name == "[ja] Lemon et al. (2016). - Understanding Customer Experience.pdf"
+
+
+def test_translated_marker_is_not_duplicated(tmp_path: Path):
+    prefixed = build_filename(
+        metadata(translated=True),
+        tmp_path,
+        format_template="[ja] {author} ({year}) - {title}.pdf",
+    )
+    assert prefixed.name == "[ja] Lemon et al. (2016) - Understanding Customer Experience.pdf"
+    suffixed = build_filename(
+        metadata(translated=True),
+        tmp_path,
+        format_template="{author} ({year}) - {title} [ja].pdf",
+    )
+    assert suffixed.name == "Lemon et al. (2016) - Understanding Customer Experience [ja].pdf"
 
 
 def test_duplicate_does_not_overwrite(tmp_path: Path):

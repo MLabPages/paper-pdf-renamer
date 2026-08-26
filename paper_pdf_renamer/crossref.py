@@ -8,7 +8,12 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from .models import LocalEvidence, ResolvedMetadata
-from .pdf_extract import detect_language, normalize_doi, normalize_language
+from .pdf_extract import (
+    detect_language,
+    normalize_doi,
+    normalize_language,
+    strip_translation_marker,
+)
 
 
 def _norm_text(value: str | None) -> str:
@@ -181,7 +186,8 @@ def _openalex_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _filename_evidence(evidence: LocalEvidence) -> tuple[str | None, int | None]:
-    stem = evidence.path.stem
+    # 先頭の ``[ja]`` などの翻訳印は著者名ではないので、照合前に取り除く。
+    stem = strip_translation_marker(evidence.path.stem)
     author = re.split(r"\s+(?:&|et\s+al\.?|ほか)|\s*\(", stem, maxsplit=1, flags=re.IGNORECASE)[0]
     author = re.sub(r"^al-", "", author, flags=re.IGNORECASE).strip(" ._-") or None
     if author and len(re.sub(r"\W", "", author, flags=re.UNICODE)) < 2:
@@ -285,13 +291,16 @@ def resolve_metadata(
             else False
         )
         year_ok = bool(year and year in {evidence.year, filename_year})
-        translated = bool(
+        # 翻訳版は本文がタイトル・著者と食い違うため、DOI一致時だけ照合を緩める。
+        translation_relaxes_checks = bool(
             source == "crossref:doi"
             and (evidence.translation_marker or (document_language == "ja" and metadata_language != "ja"))
         )
-        if evidence.title and similarity < 0.85 and not translated:
+        # ファイル名の ``[ja]`` などの印は、照合経路にかかわらずリネーム後も残す。
+        translated = translation_relaxes_checks or evidence.translation_marker
+        if evidence.title and similarity < 0.85 and not translation_relaxes_checks:
             reasons.append("title-mismatch")
-        if evidence.first_author and not author_ok and not translated:
+        if evidence.first_author and not author_ok and not translation_relaxes_checks:
             # A PDF's first-page extraction is fragile. If DOI/title metadata
             # agrees, keep this discrepancy visible without blocking the rename.
             warnings.append("author-mismatch")
@@ -313,7 +322,7 @@ def resolve_metadata(
             confidence += 0.03
         if bibliographic_matches >= 2:
             confidence += 0.04
-        if evidence.title and similarity < 0.85 and not translated:
+        if evidence.title and similarity < 0.85 and not translation_relaxes_checks:
             confidence -= 0.35
         if source == "crossref:title":
             confidence -= 0.03

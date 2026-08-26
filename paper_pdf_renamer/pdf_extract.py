@@ -13,6 +13,11 @@ _TRANSLATION_MARKER_RE = re.compile(
     r"(?:^|[\s._()\[\]-])(?:ja|jpn|japanese|日本語|日本語訳|翻訳|translated|translation)(?:$|[\s._()\[\]-])",
     re.IGNORECASE,
 )
+# Readableなどで翻訳したPDFに手動で付ける先頭の印（例: ``[ja] タイトル``）。
+_TRANSLATION_MARKER_PREFIX_RE = re.compile(
+    r"^[\s._()\[\]-]*(?:ja|jpn|japanese|日本語|日本語訳|翻訳|translated|translation)[\s._()\[\]-]+",
+    re.IGNORECASE,
+)
 
 
 def normalize_doi(value: str | None) -> str | None:
@@ -72,6 +77,14 @@ def has_translation_marker(value: str | Path | None) -> bool:
     if not value:
         return False
     return bool(_TRANSLATION_MARKER_RE.search(Path(str(value)).stem))
+
+
+def strip_translation_marker(value: str | None) -> str:
+    """先頭に付いた ``[ja]`` などの翻訳印を除いた本体を返す。"""
+
+    if not value:
+        return ""
+    return _TRANSLATION_MARKER_PREFIX_RE.sub("", value, count=1).strip(" ._-")
 
 
 def normalize_language(value: str | None) -> str | None:
