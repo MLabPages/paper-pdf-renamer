@@ -32,7 +32,7 @@ if ($LASTEXITCODE -ne 0) { throw "スタートメニュー登録に失敗しま�
 # 既存設定が自動起動ONなら、Windows起動時もPython版ではなく今回のEXEを使う。
 $settingsPath = Join-Path $env:APPDATA "paper-pdf-renamer\settings.json"
 if (Test-Path -LiteralPath $settingsPath) {
-    $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+    $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     New-Item -Path $runKey -Force | Out-Null
     if ($settings.auto_start -eq $true) {
