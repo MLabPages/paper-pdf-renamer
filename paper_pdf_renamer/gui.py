@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import threading
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,7 +17,7 @@ from uuid import uuid4
 
 from .config import Settings, validate_format_template
 from .crossref import CrossrefClient, resolve_metadata
-from .desktop_window import open_app_window
+from .desktop_window import DesktopWindow
 from .history import HistoryLog
 from .instance import SingleInstanceLock, clear_server_state, read_server_port, write_server_state
 from .models import RenameCandidate
@@ -134,6 +135,7 @@ class AppState:
         self._watchers: list[tuple[PollingWatcher, threading.Event, threading.Thread]] = []
         self.monitoring = False
         self.message = "停止中"
+        self.show_window = lambda: None
 
     def _service(self) -> RenameService:
         client = CrossrefClient(mailto=self.settings.mailto or None)
@@ -587,6 +589,9 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"result": self.state.undo()}
             elif path == "/api/select-folder":
                 result = {"path": select_windows_folder()}
+            elif path == "/api/show-window":
+                self.state.show_window()
+                result = {"shown": True}
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
@@ -616,7 +621,13 @@ def run_server(port: int = 8766, open_browser: bool = True, tray: bool | None = 
         existing_port = read_server_port() or port
         url = f"http://127.0.0.1:{existing_port}/"
         if open_browser:
-            threading.Timer(0.35, lambda: open_app_window(url)).start()
+            try:
+                request = urllib.request.Request(
+                    f"{url}api/show-window", data=b"{}", method="POST"
+                )
+                urllib.request.urlopen(request, timeout=2).close()
+            except OSError:
+                pass
         print(f"論文PDFファイル名整理は起動済みです: {url}")
         return 0
 
@@ -631,8 +642,6 @@ def run_server(port: int = 8766, open_browser: bool = True, tray: bool | None = 
         server = ThreadingHTTPServer(("127.0.0.1", actual_port), handler)
         write_server_state(actual_port)
         url = f"http://127.0.0.1:{actual_port}/"
-        if open_browser:
-            threading.Timer(0.35, lambda: open_app_window(url)).start()
         print(f"論文PDFファイル名整理: {url}")
         use_tray = os.name == "nt" if tray is None else tray
         if use_tray:
@@ -640,7 +649,22 @@ def run_server(port: int = 8766, open_browser: bool = True, tray: bool | None = 
 
             server_thread = threading.Thread(target=server.serve_forever, daemon=True)
             server_thread.start()
-            run_tray(state, url, server.shutdown)
+            window = DesktopWindow(url)
+            state.show_window = window.show
+
+            def shutdown() -> None:
+                server.shutdown()
+                window.exit()
+
+            tray_thread = threading.Thread(
+                target=run_tray,
+                args=(state, window.show, shutdown),
+                daemon=True,
+            )
+            tray_thread.start()
+            window.run()
+            server.shutdown()
+            tray_thread.join(timeout=2.0)
             server_thread.join(timeout=2.0)
         else:
             server.serve_forever()

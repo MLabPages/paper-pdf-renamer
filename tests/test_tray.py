@@ -35,7 +35,7 @@ class FakeIcon:
 def test_tray_pause_and_resume_update_state_and_icon() -> None:
     state = FakeState()
     icon = FakeIcon()
-    actions = TrayActions(state, "http://127.0.0.1:8766/", lambda: None)
+    actions = TrayActions(state, lambda: None, lambda: None)
 
     with patch("paper_pdf_renamer.tray._status_image", side_effect=lambda active: f"icon-{active}"):
         actions.pause(icon)
@@ -56,11 +56,11 @@ def test_tray_open_and_exit() -> None:
     state = FakeState()
     icon = FakeIcon()
     shutdown = []
-    actions = TrayActions(state, "http://127.0.0.1:8766/", lambda: shutdown.append(True))
+    shown = []
+    actions = TrayActions(state, lambda: shown.append(True), lambda: shutdown.append(True))
 
-    with patch("paper_pdf_renamer.tray.open_app_window") as opened:
-        actions.open_ui()
-    opened.assert_called_once_with("http://127.0.0.1:8766/")
+    actions.open_ui()
+    assert shown == [True]
 
     actions.exit(icon)
     assert shutdown == [True]

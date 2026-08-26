@@ -1,34 +1,44 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import webbrowser
-from pathlib import Path
+import threading
+from typing import Any
 
 
-def _edge_candidates() -> tuple[Path, ...]:
-    roots = [
-        os.environ.get("PROGRAMFILES(X86)"),
-        os.environ.get("PROGRAMFILES"),
-        os.environ.get("LOCALAPPDATA"),
-    ]
-    return tuple(
-        Path(root) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
-        for root in roots
-        if root
-    )
+class DesktopWindow:
+    """WebView2-backed application window that closes to the system tray."""
 
+    def __init__(self, url: str):
+        self.url = url
+        self._window: Any | None = None
+        self._exiting = threading.Event()
 
-def open_app_window(url: str) -> bool:
-    """Open the local UI in a dedicated Edge app window, not a browser tab."""
+    def run(self) -> None:
+        import webview
 
-    if os.name == "nt":
-        edge = next((path for path in _edge_candidates() if path.is_file()), None)
-        if edge is not None:
-            subprocess.Popen(
-                [str(edge), f"--app={url}"],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                close_fds=True,
-            )
+        self._window = webview.create_window(
+            "論文PDFファイル名整理",
+            self.url,
+            width=1280,
+            height=850,
+            min_size=(820, 600),
+            background_color="#f3f6fa",
+        )
+        self._window.events.closing += self._close_to_tray
+        webview.start(gui="edgechromium")
+
+    def show(self) -> None:
+        if self._window is not None:
+            self._window.show()
+            self._window.restore()
+
+    def exit(self) -> None:
+        self._exiting.set()
+        if self._window is not None:
+            self._window.destroy()
+
+    def _close_to_tray(self) -> bool:
+        if self._exiting.is_set():
             return True
-    return bool(webbrowser.open(url))
+        if self._window is not None:
+            self._window.hide()
+        return False

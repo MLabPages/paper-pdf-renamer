@@ -4,15 +4,12 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from .desktop_window import open_app_window
-
-
 class TrayActions:
     """タスクトレーメニューからアプリ状態を安全に操作する。"""
 
-    def __init__(self, state: Any, url: str, shutdown: Callable[[], None]):
+    def __init__(self, state: Any, show_window: Callable[[], None], shutdown: Callable[[], None]):
         self.state = state
-        self.url = url
+        self.show_window = show_window
         self.shutdown = shutdown
 
     def status_text(self, _item: object | None = None) -> str:
@@ -27,7 +24,7 @@ class TrayActions:
         self._refresh(icon)
 
     def open_ui(self, _icon: Any = None, _item: object | None = None) -> None:
-        open_app_window(self.url)
+        self.show_window()
 
     def exit(self, icon: Any = None, _item: object | None = None) -> None:
         self.shutdown()
@@ -60,10 +57,10 @@ def _status_image(monitoring: bool):
     return image
 
 
-def run_tray(state: Any, url: str, shutdown: Callable[[], None]) -> None:
+def run_tray(state: Any, show_window: Callable[[], None], shutdown: Callable[[], None]) -> None:
     import pystray
 
-    actions = TrayActions(state, url, shutdown)
+    actions = TrayActions(state, show_window, shutdown)
     menu = pystray.Menu(
         pystray.MenuItem(actions.status_text, None, enabled=False),
         pystray.Menu.SEPARATOR,
