@@ -3,6 +3,8 @@ from pathlib import Path
 from paper_pdf_renamer.pdf_extract import (
     _extract_bibliographic_hints,
     _guess_title_and_authors,
+    _layout_title,
+    _visible_doi,
     detect_document_language,
     extract_pdf,
     has_translation_marker,
@@ -12,7 +14,45 @@ from paper_pdf_renamer.pdf_extract import (
 
 def test_normalize_doi():
     assert normalize_doi("https://doi.org/10.1000/ABC.123).") == "10.1000/abc.123"
+    assert normalize_doi("10.3389/fpsyg.2021.722108)/s/uri") == "10.3389/fpsyg.2021.722108"
     assert normalize_doi("not a doi") is None
+
+
+def test_layout_title_uses_prominent_heading_and_joins_wrapped_blocks():
+    page = {
+        "height": 800,
+        "blocks": [
+            {"type": 0, "bbox": (50, 30, 500, 45), "lines": [{"spans": [{"text": "Journal of Service Management", "size": 9}]}]},
+            {"type": 0, "bbox": (100, 80, 450, 105), "lines": [{"spans": [{"text": "Measuring customer experience in", "size": 21}]}]},
+            {"type": 0, "bbox": (120, 106, 430, 130), "lines": [{"spans": [{"text": "physical retail environments", "size": 21}]}]},
+            {"type": 0, "bbox": (100, 150, 450, 170), "lines": [{"spans": [{"text": "Juan Carlos Bustamante", "size": 12}]}]},
+            {"type": 0, "bbox": (100, 250, 450, 500), "lines": [{"spans": [{"text": "Abstract This long paragraph is body text and must not become the title. " * 4, "size": 9}]}]},
+        ],
+    }
+    assert _layout_title([page]) == "Measuring customer experience in physical retail environments"
+
+
+def test_layout_title_ignores_large_article_in_press_watermark():
+    page = {
+        "height": 800,
+        "blocks": [
+            {"type": 0, "bbox": (170, 280, 410, 530), "lines": [{"spans": [{"text": "ARTICLE IN PRESS", "size": 30}]}]},
+            {"type": 0, "bbox": (45, 150, 540, 250), "lines": [{"spans": [{"text": "From movement to motor behavior: epistemology of embodied knowledge and the limits of its digital representation", "size": 28}]}]},
+        ],
+    }
+    assert _layout_title([page]).startswith("From movement to motor behavior")
+
+
+def test_visible_doi_uses_span_before_adjacent_heading_is_merged():
+    page = {
+        "blocks": [{
+            "lines": [{"spans": [
+                {"text": "https://doi.org/10.1057/s41599-026-08704-9"},
+                {"text": "Article in Press"},
+            ]}],
+        }],
+    }
+    assert _visible_doi([page]) == "10.1057/s41599-026-08704-9"
 
 
 def test_doi_is_detected_without_pymupdf(tmp_path: Path):

@@ -21,7 +21,12 @@ def normalize_doi(value: str | None) -> str | None:
     match = DOI_RE.search(value.strip())
     if not match:
         return None
-    doi = match.group(0).rstrip(".,;:)]}>'\"")
+    doi = match.group(0)
+    # XMP/RDF strings can leave a serialized container suffix directly after
+    # the DOI, for example ``10.3389/fpsyg.2021.722108)/s/uri``. It is not part
+    # of the identifier and makes an otherwise valid DOI return HTTP 404.
+    doi = re.sub(r"\)/s/(?:uri|li|bag|seq|alt)\b.*$", "", doi, flags=re.IGNORECASE)
+    doi = doi.rstrip(".,;:)]}>'\"")
     return doi.lower()
 
 
@@ -360,6 +365,85 @@ def _usable_embedded_author(value: str | None) -> str | None:
     return value
 
 
+def _layout_title(page_dicts: list[dict]) -> str | None:
+    """Find a title from prominent first-page text blocks.
+
+    PDF text stream order is often unrelated to the visible page order,
+    especially for two-column journal layouts. Font size and page coordinates
+    provide a separate local signal that is much less likely to select an
+    abstract paragraph or a body heading as the article title.
+    """
+
+    candidates: list[tuple[float, int, float, float, str]] = []
+    for page_index, page in enumerate(page_dicts[:3]):
+        height = float(page.get("height") or 1.0)
+        for block in page.get("blocks", []):
+            if block.get("type", 0) != 0:
+                continue
+            spans = [span for line in block.get("lines", []) for span in line.get("spans", [])]
+            text = _clean(" ".join(str(span.get("text") or "") for span in spans))
+            sizes = [float(span.get("size") or 0.0) for span in spans if span.get("text")]
+            if not text or not sizes:
+                continue
+            words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ一-龯ぁ-んァ-ン]+", text)
+            letters = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", text)
+            lowered = text.casefold()
+            if len(words) < 3 or len(text) > 350:
+                continue
+            if letters and all(char.isupper() for char in letters):
+                continue
+            if DOI_RE.search(text) or re.search(r"https?://|www\.", lowered):
+                continue
+            if re.fullmatch(r"(?:article in press|original article|research|review|methods?)", lowered):
+                continue
+            y0 = float((block.get("bbox") or (0, 0, 0, 0))[1])
+            if y0 > height * 0.60:
+                continue
+            max_size = max(sizes)
+            score = max_size * 2.0 + min(len(words), 16) * 0.45 - page_index * 5.0
+            candidates.append((score, page_index, y0, max_size, text))
+
+    if not candidates:
+        return None
+    _, page_index, y0, size, title = max(candidates, key=lambda item: item[0])
+
+    # Some publishers store each wrapped title line as a separate block.
+    # Join only immediately adjacent blocks with essentially the same font.
+    page = page_dicts[page_index]
+    continuations: list[tuple[float, str]] = []
+    for block in page.get("blocks", []):
+        if block.get("type", 0) != 0:
+            continue
+        bbox = block.get("bbox") or (0, 0, 0, 0)
+        block_y = float(bbox[1])
+        if block_y <= y0 or block_y - y0 > size * 3.0:
+            continue
+        spans = [span for line in block.get("lines", []) for span in line.get("spans", [])]
+        text = _clean(" ".join(str(span.get("text") or "") for span in spans))
+        sizes = [float(span.get("size") or 0.0) for span in spans if span.get("text")]
+        if not text or not sizes or abs(max(sizes) - size) > max(1.0, size * 0.12):
+            continue
+        if len(text) <= 180 and not DOI_RE.search(text):
+            continuations.append((block_y, text))
+    for _, continuation in sorted(continuations):
+        if continuation not in title:
+            title = f"{title} {continuation}"
+    return _clean(title)
+
+
+def _visible_doi(page_dicts: list[dict]) -> str | None:
+    """Read a DOI from individual visible spans before page text is merged."""
+
+    for page in page_dicts:
+        for block in page.get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    candidate = normalize_doi(str(span.get("text") or ""))
+                    if candidate:
+                        return candidate
+    return None
+
+
 def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
     """本文先頭3ページをローカル抽出し、DOI・タイトル・著者候補を得る。"""
 
@@ -368,14 +452,19 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
         raise ValueError(f"PDFではありません: {pdf_path}")
     raw = pdf_path.read_bytes()
     raw_text = raw.decode("latin-1", errors="ignore")
-    doi = normalize_doi(raw_text)
+    raw_doi = normalize_doi(raw_text)
+    doi = None
     embedded_title = embedded_author = None
     embedded_year: int | None = None
     text = ""
+    page_dicts: list[dict] = []
     notes: list[str] = []
 
     try:
-        import fitz  # type: ignore
+        try:
+            import pymupdf as fitz  # type: ignore
+        except ImportError:
+            import fitz  # type: ignore
     except ImportError:
         notes.append("PyMuPDF未導入のため本文抽出なし")
     else:
@@ -388,23 +477,26 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
                 year_match = re.search(r"(19|20)\d{2}", date or "")
                 embedded_year = int(year_match.group(0)) if year_match else None
                 for page in list(document)[:max_pages]:
-                    text += "\n" + page.get_text("text")
+                    text += "\n" + page.get_text("text", sort=True)
+                    page_dict = page.get_text("dict", sort=True)
+                    page_dicts.append(page_dict)
         except Exception as exc:  # malformed/encrypted PDFs remain safely held
             notes.append(f"PDF本文抽出失敗: {type(exc).__name__}")
 
-    if not doi:
-        doi = normalize_doi(text)
+    # Visible first pages are stronger evidence than arbitrary serialized PDF
+    # bytes, which can include XMP markup or DOI references from elsewhere.
+    doi = _visible_doi(page_dicts) or normalize_doi(text) or raw_doi
     title = _usable_embedded_title(embedded_title)
     authors = _split_authors(_usable_embedded_author(embedded_author))
     embedded_metadata_used = bool(title or authors)
     guessed_title, guessed_authors = _guess_title_and_authors(text)
     if not title:
-        title = guessed_title
+        title = _layout_title(page_dicts) or guessed_title
     if not authors:
         authors = guessed_authors
     if not title and not authors and not doi:
         notes.append("DOI・タイトル・著者候補を検出できませんでした")
-    source = "pdf-embedded" if embedded_metadata_used else "pdf-text" if text else "pdf-bytes"
+    source = "pdf-embedded" if embedded_metadata_used else "pdf-layout" if page_dicts and title else "pdf-text" if text else "pdf-bytes"
     document_language = detect_document_language(text)
     language = document_language or normalize_language(detect_language(title, *authors))
     volume, issue, pages = _extract_bibliographic_hints(text, pdf_path)
