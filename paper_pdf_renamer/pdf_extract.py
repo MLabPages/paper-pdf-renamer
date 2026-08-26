@@ -351,6 +351,10 @@ def _usable_embedded_title(value: str | None) -> str | None:
     value = _clean(value)
     if not value or value.casefold() in _GENERIC_TITLES:
         return None
+    # Publisher export filenames such as ``peerj-13063 1..22`` are often
+    # stored in /Title even though the visible heading contains the real title.
+    if re.fullmatch(r"[\w.-]*\d[\w.-]*(?:\s+\d+\.\.\d+)?", value, re.IGNORECASE):
+        return None
     return value if _looks_like_title(value) else None
 
 
@@ -411,19 +415,33 @@ def _layout_title(page_dicts: list[dict]) -> str | None:
     # Join only immediately adjacent blocks with essentially the same font.
     page = page_dicts[page_index]
     continuations: list[tuple[float, str]] = []
-    for block in page.get("blocks", []):
+    ordered_blocks = sorted(page.get("blocks", []), key=lambda block: float((block.get("bbox") or (0, 0, 0, 0))[1]))
+    for block in ordered_blocks:
         if block.get("type", 0) != 0:
             continue
         bbox = block.get("bbox") or (0, 0, 0, 0)
         block_y = float(bbox[1])
-        if block_y <= y0 or block_y - y0 > size * 3.0:
+        if block_y <= y0 or block_y - y0 > size * 4.5:
             continue
         spans = [span for line in block.get("lines", []) for span in line.get("spans", [])]
         text = _clean(" ".join(str(span.get("text") or "") for span in spans))
         sizes = [float(span.get("size") or 0.0) for span in spans if span.get("text")]
-        if not text or not sizes or abs(max(sizes) - size) > max(1.0, size * 0.12):
+        if not text or not sizes:
             continue
-        if len(text) <= 180 and not DOI_RE.search(text):
+        words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ一-龯ぁ-んァ-ン]+", text)
+        size_difference = abs(max(sizes) - size)
+        same_title_size = size_difference <= max(1.0, size * 0.12)
+        subtitle_size = size_difference <= max(1.0, size * 0.35) and len(words) >= 4
+        if _looks_like_author_line(text) and not same_title_size:
+            # Once the visible byline begins, affiliation blocks below it must
+            # never be appended to the title.
+            break
+        if (
+            len(text) <= 180
+            and not DOI_RE.search(text)
+            and (not _looks_like_author_line(text) or same_title_size)
+            and (same_title_size or subtitle_size)
+        ):
             continuations.append((block_y, text))
     for _, continuation in sorted(continuations):
         if continuation not in title:
@@ -431,17 +449,23 @@ def _layout_title(page_dicts: list[dict]) -> str | None:
     return _clean(title)
 
 
-def _visible_doi(page_dicts: list[dict]) -> str | None:
-    """Read a DOI from individual visible spans before page text is merged."""
+def _visible_dois(page_dicts: list[dict]) -> tuple[str, ...]:
+    """Read all DOI candidates from visible spans before page text is merged."""
 
+    candidates: list[str] = []
     for page in page_dicts:
         for block in page.get("blocks", []):
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
                     candidate = normalize_doi(str(span.get("text") or ""))
-                    if candidate:
-                        return candidate
-    return None
+                    if candidate and candidate not in candidates:
+                        candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _visible_doi(page_dicts: list[dict]) -> str | None:
+    candidates = _visible_dois(page_dicts)
+    return candidates[0] if candidates else None
 
 
 def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
@@ -485,7 +509,9 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
 
     # Visible first pages are stronger evidence than arbitrary serialized PDF
     # bytes, which can include XMP markup or DOI references from elsewhere.
-    doi = _visible_doi(page_dicts) or normalize_doi(text) or raw_doi
+    visible_dois = _visible_dois(page_dicts)
+    doi = (visible_dois[0] if visible_dois else None) or normalize_doi(text) or raw_doi
+    doi_candidates = tuple(dict.fromkeys(candidate for candidate in (*visible_dois, raw_doi) if candidate))
     title = _usable_embedded_title(embedded_title)
     authors = _split_authors(_usable_embedded_author(embedded_author))
     embedded_metadata_used = bool(title or authors)
@@ -513,4 +539,5 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
         volume=volume,
         issue=issue,
         pages=pages,
+        doi_candidates=doi_candidates,
     )

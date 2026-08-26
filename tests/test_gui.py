@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from paper_pdf_renamer.config import Settings
-from paper_pdf_renamer.gui import AppState, run_server, select_windows_folder
+from paper_pdf_renamer.gui import AppState, _warning_text, run_server, select_windows_folder
 from paper_pdf_renamer.history import HistoryLog
 from paper_pdf_renamer.models import ResolvedMetadata
 from paper_pdf_renamer.operations import RenameService
@@ -13,6 +13,12 @@ from paper_pdf_renamer.operations import RenameService
 
 def test_gui_uses_port_separate_from_translator() -> None:
     assert inspect.signature(run_server).parameters["port"].default == 8766
+
+
+def test_openalex_warning_is_shown_in_japanese() -> None:
+    text = _warning_text(("verified-by-openalex", "doi-missing-verified-by-openalex"))
+    assert "OpenAlex" in text
+    assert "タイトル・著者・年が一致" in text
 
 
 def test_select_windows_folder_decodes_unicode_path() -> None:

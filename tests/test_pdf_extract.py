@@ -43,6 +43,27 @@ def test_layout_title_ignores_large_article_in_press_watermark():
     assert _layout_title([page]).startswith("From movement to motor behavior")
 
 
+def test_layout_title_joins_smaller_subtitle_blocks():
+    page = {
+        "height": 800,
+        "blocks": [
+            {"type": 0, "bbox": (50, 100, 300, 120), "lines": [{"spans": [{"text": "Domestic Robot Ecology", "size": 16}]}]},
+            {"type": 0, "bbox": (50, 140, 500, 160), "lines": [{"spans": [{"text": "An Initial Framework to Unpack Long-Term Acceptance of Robots at Home", "size": 12}]}]},
+            {"type": 0, "bbox": (50, 180, 350, 200), "lines": [{"spans": [{"text": "JaYoung Sung Rebecca E. Grinter Henrik I. Christensen", "size": 11}]}]},
+            {"type": 0, "bbox": (50, 205, 350, 225), "lines": [{"spans": [{"text": "School of Interactive Computing Georgia Institute of Technology", "size": 11}]}]},
+        ],
+    }
+    assert _layout_title([page]) == (
+        "Domestic Robot Ecology An Initial Framework to Unpack Long-Term Acceptance of Robots at Home"
+    )
+
+
+def test_export_filename_is_not_used_as_embedded_title():
+    from paper_pdf_renamer.pdf_extract import _usable_embedded_title
+
+    assert _usable_embedded_title("peerj-13063 1..22") is None
+
+
 def test_visible_doi_uses_span_before_adjacent_heading_is_merged():
     page = {
         "blocks": [{

@@ -48,6 +48,8 @@ REASON_LABELS = {
 }
 WARNING_LABELS = {
     "author-mismatch": "著者は補助照合で不一致ですが、DOI・タイトル等を優先しました",
+    "verified-by-openalex": "Crossref未収録のためOpenAlexでも照合しました",
+    "doi-missing-verified-by-openalex": "DOIはありませんが、OpenAlexでタイトル・著者・年が一致しました",
 }
 
 

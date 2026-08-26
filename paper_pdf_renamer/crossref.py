@@ -134,21 +134,91 @@ class CrossrefClient:
         return [item for item in items if isinstance(item, dict)]
 
 
-def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = None) -> ResolvedMetadata:
+class OpenAlexClient:
+    """DOIなし・Crossref未収録時だけ使う補助書誌クライアント。"""
+
+    def __init__(self, timeout: float = 10.0):
+        self.timeout = timeout
+
+    def search_title(self, title: str, rows: int = 5) -> list[dict[str, Any]]:
+        query = urllib.parse.urlencode({
+            "search": title,
+            "per_page": rows,
+            "select": "id,display_name,publication_year,authorships,doi,type,language",
+        })
+        request = urllib.request.Request(
+            f"https://api.openalex.org/works?{query}",
+            headers={"Accept": "application/json", "User-Agent": "paper-pdf-renamer/0.1"},
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            payload = json.load(response)
+        return [item for item in payload.get("results", []) if isinstance(item, dict)]
+
+
+def _openalex_item(item: dict[str, Any]) -> dict[str, Any]:
+    type_map = {
+        "article": "journal-article",
+        "book-chapter": "book-chapter",
+        "book": "book",
+        "preprint": "posted-content",
+    }
+    authors = []
+    for authorship in item.get("authorships", []) or []:
+        display_name = (authorship.get("author") or {}).get("display_name")
+        if display_name:
+            raw_name = str(display_name).strip()
+            family = raw_name.split(",", 1)[0] if "," in raw_name else raw_name.split()[-1]
+            authors.append({"family": family})
+    year = item.get("publication_year")
+    return {
+        "DOI": item.get("doi"),
+        "title": [item.get("display_name")],
+        "author": authors,
+        "issued": {"date-parts": [[year]]} if isinstance(year, int) else {},
+        "type": type_map.get(item.get("type"), item.get("type")),
+        "language": item.get("language"),
+    }
+
+
+def _filename_evidence(evidence: LocalEvidence) -> tuple[str | None, int | None]:
+    stem = evidence.path.stem
+    author = re.split(r"\s+(?:&|et\s+al\.?|ほか)|\s*\(", stem, maxsplit=1, flags=re.IGNORECASE)[0]
+    author = re.sub(r"^al-", "", author, flags=re.IGNORECASE).strip(" ._-") or None
+    if author and len(re.sub(r"\W", "", author, flags=re.UNICODE)) < 2:
+        author = None
+    year_match = re.search(r"\((19|20)\d{2}\)", stem)
+    return author, int(year_match.group(0)[1:-1]) if year_match else None
+
+
+def resolve_metadata(
+    evidence: LocalEvidence,
+    client: CrossrefClient | None = None,
+    openalex_client: OpenAlexClient | None = None,
+) -> ResolvedMetadata:
     client = client or CrossrefClient()
+    openalex_client = openalex_client or OpenAlexClient()
     item: dict[str, Any] | None = None
     source = evidence.metadata_source
     reasons: list[str] = []
     warnings: list[str] = []
-    query_doi = evidence.doi
+    query_dois = evidence.doi_candidates or ((evidence.doi,) if evidence.doi else ())
+    lookup_errors: list[str] = []
 
-    if query_doi:
-        try:
-            item = client.lookup_doi(query_doi)
-            source = "crossref:doi" if item else source
-        except Exception as exc:
-            reasons.append(f"crossref-lookup-failed:{type(exc).__name__}")
-    elif evidence.title:
+    if query_dois:
+        doi_items: list[dict[str, Any]] = []
+        for query_doi in query_dois:
+            try:
+                candidate = client.lookup_doi(query_doi)
+                if candidate:
+                    doi_items.append(candidate)
+            except Exception as exc:
+                lookup_errors.append(f"crossref-lookup-failed:{type(exc).__name__}")
+        if doi_items:
+            item = max(doi_items, key=lambda candidate: _candidate_rank(evidence, candidate))
+            source = "crossref:doi"
+
+    title_search_low = False
+    if item is None and evidence.title:
         try:
             results = client.search_title(evidence.title)
             ranked = sorted(results, key=lambda candidate: _candidate_rank(evidence, candidate), reverse=True)
@@ -159,9 +229,41 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
                 item = ranked[0]
                 source = "crossref:title"
             else:
-                reasons.append("title-search-match-too-low")
+                title_search_low = True
         except Exception as exc:
-            reasons.append(f"crossref-search-failed:{type(exc).__name__}")
+            lookup_errors.append(f"crossref-search-failed:{type(exc).__name__}")
+
+    if item is None and evidence.title:
+        try:
+            openalex_results = openalex_client.search_title(evidence.title)
+            ranked_openalex = sorted(
+                openalex_results,
+                key=lambda candidate: title_similarity(evidence.title, candidate.get("display_name")),
+                reverse=True,
+            )
+            if ranked_openalex:
+                candidate = _openalex_item(ranked_openalex[0])
+                candidate_data = _item_metadata(candidate)
+                similarity = title_similarity(evidence.title, candidate_data["title"])
+                filename_author, filename_year = _filename_evidence(evidence)
+                author_ok = _author_match(evidence.first_author, candidate_data["authors"]) or _author_match(
+                    filename_author, candidate_data["authors"]
+                )
+                year_ok = bool(
+                    candidate_data["year"]
+                    and candidate_data["year"] in {evidence.year, filename_year}
+                )
+                if similarity >= 0.95 and author_ok and year_ok:
+                    item = candidate
+                    source = "openalex:title"
+                    warnings.append("verified-by-openalex")
+        except Exception as exc:
+            lookup_errors.append(f"openalex-search-failed:{type(exc).__name__}")
+
+    if item is None:
+        reasons.extend(lookup_errors)
+        if title_search_low:
+            reasons.append("title-search-match-too-low")
 
     if item:
         data = _item_metadata(item)
@@ -175,7 +277,14 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
         paper_type = data["type"]
         similarity = title_similarity(evidence.title, title) if evidence.title else 1.0
         bibliographic_matches = _bibliographic_matches(evidence, data)
-        author_ok = _author_match(evidence.first_author, authors) if evidence.first_author else True
+        filename_author, filename_year = _filename_evidence(evidence)
+        author_ok = (
+            _author_match(evidence.first_author, authors)
+            or _author_match(filename_author, authors)
+            if authors
+            else False
+        )
+        year_ok = bool(year and year in {evidence.year, filename_year})
         translated = bool(
             source == "crossref:doi"
             and (evidence.translation_marker or (document_language == "ja" and metadata_language != "ja"))
@@ -186,8 +295,13 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
             # A PDF's first-page extraction is fragile. If DOI/title metadata
             # agrees, keep this discrepancy visible without blocking the rename.
             warnings.append("author-mismatch")
-        if not doi:
+        verified_without_doi = bool(
+            source == "openalex:title" and similarity >= 0.95 and author_ok and year_ok
+        )
+        if not doi and not verified_without_doi:
             reasons.append("doi-missing")
+        elif not doi:
+            warnings.append("doi-missing-verified-by-openalex")
         if paper_type and paper_type not in {"journal-article", "proceedings-article", "book-chapter", "book-part", "posted-content"}:
             reasons.append("non-paper-type")
         if not paper_type:
@@ -202,6 +316,8 @@ def resolve_metadata(evidence: LocalEvidence, client: CrossrefClient | None = No
         if evidence.title and similarity < 0.85 and not translated:
             confidence -= 0.35
         if source == "crossref:title":
+            confidence -= 0.03
+        if source == "openalex:title":
             confidence -= 0.03
     else:
         doi, title, authors, year = evidence.doi, evidence.title, evidence.authors, evidence.year

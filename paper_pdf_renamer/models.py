@@ -21,6 +21,7 @@ class LocalEvidence:
     volume: str | None = None
     issue: str | None = None
     pages: str | None = None
+    doi_candidates: tuple[str, ...] = ()
 
     @property
     def first_author(self) -> str | None:

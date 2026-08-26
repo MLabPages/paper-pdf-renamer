@@ -18,6 +18,14 @@ class FakeCrossref:
         return [self.item]
 
 
+class FakeOpenAlex:
+    def __init__(self, items=()):
+        self.items = list(items)
+
+    def search_title(self, title):
+        return self.items
+
+
 ITEM = {
     "DOI": "10.5555/ABC",
     "title": ["Understanding Customer Experience"],
@@ -166,3 +174,66 @@ def test_translated_pdf_uses_doi_metadata_and_is_marked_for_filename():
     assert result.translated
     assert result.document_language == "ja"
     assert result.title == "Understanding Customer Experience"
+
+
+def test_multiple_visible_dois_select_the_title_matching_article():
+    proceedings = {
+        **ITEM,
+        "DOI": "10.1145/3772318",
+        "title": ["Proceedings of the 2026 CHI Conference"],
+        "type": "proceedings",
+    }
+    article = {
+        **ITEM,
+        "DOI": "10.1145/3772318.3790714",
+        "title": ["RECALLbot: Designing Agentic Memory and Reciprocal Disclosure for Human-Chatbot Relationships"],
+        "type": "proceedings-article",
+    }
+
+    class MultiCrossref(FakeCrossref):
+        def lookup_doi(self, doi):
+            return proceedings if doi == "10.1145/3772318" else article
+
+    result = resolve_metadata(
+        LocalEvidence(
+            Path("Jiang et al. (2026).pdf"),
+            "10.1145/3772318",
+            article["title"][0],
+            ("Zhaojun Jiang",),
+            year=2026,
+            doi_candidates=("10.1145/3772318", "10.1145/3772318.3790714"),
+        ),
+        MultiCrossref(article),
+        FakeOpenAlex(),
+    )
+    assert result.safe_to_rename
+    assert result.doi == "10.1145/3772318.3790714"
+
+
+def test_openalex_can_verify_doi_less_work_with_title_author_and_year():
+    openalex_item = {
+        "display_name": "Consumer-product attachment: Measurement and design implications",
+        "publication_year": 2008,
+        "doi": None,
+        "type": "article",
+        "authorships": [
+            {"author": {"display_name": "Hendrik N.J. Schifferstein"}},
+            {"author": {"display_name": "Elly P. H. Zwartkruis-Pelgrim"}},
+        ],
+    }
+    result = resolve_metadata(
+        LocalEvidence(
+            Path("Schifferstein & Zwartkruis-Pelgrim (2008).pdf"),
+            None,
+            "Consumer-Product Attachment: Measurement and Design Implications",
+            (),
+            year=2009,
+        ),
+        FakeCrossref(None),
+        FakeOpenAlex([openalex_item]),
+    )
+    assert result.safe_to_rename
+    assert result.year == 2008
+    assert result.source == "openalex:title"
+    assert result.authors == ("Schifferstein", "Zwartkruis-Pelgrim")
+    assert "doi-missing-verified-by-openalex" in result.warnings
