@@ -38,6 +38,7 @@ New-Item -ItemType Directory -Force -Path $distPath, $workPath, $specPath | Out-
     --version-file $versionInfo `
     --paths $repoRoot `
     --collect-all fitz `
+    --collect-all pystray `
     --distpath $distPath `
     --workpath $workPath `
     --specpath $specPath `

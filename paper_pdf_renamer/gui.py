@@ -610,7 +610,7 @@ def _available_port(preferred: int) -> int:
     raise OSError(f"ローカル画面のポートを確保できませんでした（{preferred}〜{preferred + 19}）")
 
 
-def run_server(port: int = 8766, open_browser: bool = True) -> int:
+def run_server(port: int = 8766, open_browser: bool = True, tray: bool | None = None) -> int:
     instance_lock = SingleInstanceLock()
     if not instance_lock.acquire():
         existing_port = read_server_port() or port
@@ -634,7 +634,16 @@ def run_server(port: int = 8766, open_browser: bool = True) -> int:
         if open_browser:
             threading.Timer(0.35, lambda: webbrowser.open(url)).start()
         print(f"論文PDFファイル名整理: {url}")
-        server.serve_forever()
+        use_tray = os.name == "nt" if tray is None else tray
+        if use_tray:
+            from .tray import run_tray
+
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            run_tray(state, url, server.shutdown)
+            server_thread.join(timeout=2.0)
+        else:
+            server.serve_forever()
     except KeyboardInterrupt:
         return 130
     finally:
@@ -647,7 +656,7 @@ def run_server(port: int = 8766, open_browser: bool = True) -> int:
 
 
 def main() -> int:
-    return run_server()
+    return run_server(tray=os.name == "nt")
 
 
 if __name__ == "__main__":
