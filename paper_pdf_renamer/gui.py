@@ -209,14 +209,15 @@ class AppState:
         return len(found)
 
     def reformat_history(self) -> int:
-        """履歴の書誌情報から、現在の形式で再整理候補を作る。"""
+        """成功履歴を再整理し、過去の要確認PDFを最新ロジックで再確認する。"""
 
         with self._lock:
             service = self._service()
-            records = self.history.latest_successful_renames()
-        found: list[RenameCandidate] = []
+            renamed_records = self.history.latest_successful_renames()
+            held_records = self.history.latest_held_reviews()
+        found_by_source: dict[str, RenameCandidate] = {}
         skipped = 0
-        for record in records:
+        for record in renamed_records:
             raw_path = record.get("new_path")
             metadata = metadata_from_history(record)
             if not raw_path or metadata is None:
@@ -226,12 +227,28 @@ class AppState:
             if not source.is_file():
                 skipped += 1
                 continue
-            found.append(service.make_candidate_from_metadata(source, metadata))
+            found_by_source[str(source.resolve()).casefold()] = service.make_candidate_from_metadata(source, metadata)
+        rescanned = 0
+        for record in held_records:
+            raw_path = record.get("original_path")
+            if not raw_path:
+                skipped += 1
+                continue
+            source = Path(str(raw_path))
+            if not source.is_file():
+                skipped += 1
+                continue
+            found_by_source[str(source.resolve()).casefold()] = service.make_candidate(source)
+            rescanned += 1
+        found = list(found_by_source.values())
         with self._lock:
             for candidate in found:
                 self._upsert(candidate)
             suffix = f"（{skipped}件は現在の場所を確認できません）" if skipped else ""
-            self.message = f"履歴から再整理候補を作成しました: {len(found)}件{suffix}。変更前後を確認してください"
+            self.message = (
+                f"履歴から再整理・再確認候補を作成しました: {len(found)}件"
+                f"（要確認の再スキャン {rescanned}件）{suffix}。変更前後を確認してください"
+            )
         return len(found)
 
     def apply(self, candidate_ids: list[str]) -> int:
@@ -372,7 +389,7 @@ tr:last-child td { border-bottom: 0; }
 <div class="guide">
 <p><strong>新しくダウンロードするPDF：</strong>フォルダを選択 → 設定を保存 → 「新しいPDFを自動監視」をON。</p>
 <p><strong>すでにあるPDF：</strong>フォルダを選択 → 設定を保存 → 「既存PDFをスキャン」 → 候補を確認 → リネーム。</p>
-<p><strong>このソフトで変更済みのPDF：</strong>「履歴から再整理」を使うと、保存済みの書誌情報で現在の形式の候補を作れます。</p>
+<p><strong>変更済み／過去に要確認のPDF：</strong>「履歴から再整理／要確認を再スキャン」で、変更済みPDFは保存情報から再整理し、要確認PDFは最新の照合方法で再確認します。</p>
 <p><strong>監視停止中に追加されたPDF：</strong>再起動後に候補として表示します。確認して実行するまで変更しません。</p>
 <p>設定を保存しただけではファイル名は変わりません。信頼度が低いPDFは安全のため保留になります。</p>
 </div>
@@ -389,7 +406,7 @@ tr:last-child td { border-bottom: 0; }
 <label for="confidence">自動変更の信頼度基準（0.90以上）</label><input id="confidence" type="number" min="0.90" max="1" step="0.01">
 <label for="mailto">Crossref連絡先（任意）</label><input id="mailto" type="text" placeholder="your-name@example.com">
 <div class="inline"><input id="auto-start" type="checkbox"><label for="auto-start">Windows起動時に自動起動</label></div>
-<div class="actions"><button id="save">設定を保存（必須）</button><button id="scan" class="secondary">既存PDFをスキャン（変更なし）</button><button id="reformat" class="secondary">履歴から再整理（変更なし）</button><button id="undo" class="secondary">直近をUndo</button></div>
+<div class="actions"><button id="save">設定を保存（必須）</button><button id="scan" class="secondary">既存PDFをスキャン（変更なし）</button><button id="reformat" class="secondary">履歴から再整理／要確認を再スキャン（変更なし）</button><button id="undo" class="secondary">直近をUndo</button></div>
 <p class="status-line" id="local-status"></p>
 </section>
 <section>
@@ -426,7 +443,7 @@ function render(state) {
   const badge = $("monitor-badge"); badge.textContent = state.monitoring ? "監視中" : "停止中"; badge.className = state.monitoring ? "badge on" : "badge";
   $("message").textContent = state.message || "";
   const candidates = $("candidates"); candidates.replaceChildren();
-  if (!state.candidates.length) { const row = candidates.insertRow(); const td = row.insertCell(); td.colSpan = 6; td.className = "empty"; td.textContent = "候補はありません。既存PDFなら「既存PDFをスキャン」または「履歴から再整理」、新規PDFなら「新しいPDFを自動監視」を使ってください。"; }
+  if (!state.candidates.length) { const row = candidates.insertRow(); const td = row.insertCell(); td.colSpan = 6; td.className = "empty"; td.textContent = "候補はありません。既存PDFなら「既存PDFをスキャン」または「履歴から再整理／要確認を再スキャン」、新規PDFなら「新しいPDFを自動監視」を使ってください。"; }
   for (const item of state.candidates.slice().reverse()) { const row = candidates.insertRow(); const check = row.insertCell(); if (item.status === "ready") { const input = document.createElement("input"); input.type = "checkbox"; input.dataset.id = item.id; input.checked = selectedIds.has(item.id); check.appendChild(input); } cell(row, item.status_label, item.status); cell(row, item.source_path && item.source_path.split(/[\\/]/).pop()); cell(row, item.destination_path && item.destination_path.split(/[\\/]/).pop()); cell(row, `${Math.round(Number(item.metadata.confidence || 0) * 100)}%`); const detail = item.reason_text || item.warning_text || "—"; const detailClass = item.status === "held" ? "hold" : item.status === "failed" ? "failed" : item.warning_text ? "warning" : ""; cell(row, detail, detailClass); }
   const history = $("history"); history.replaceChildren();
   if (!state.history.length) { const row = history.insertRow(); const td = row.insertCell(); td.colSpan = 7; td.className = "empty"; td.textContent = "まだ処理履歴はありません。"; }
@@ -437,7 +454,7 @@ async function saveSettings(refreshNow=true) { const folders = $("folders").valu
 $("save").onclick = async () => { try { await saveSettings(); $("local-status").textContent = "設定を保存しました"; } catch (error) { $("local-status").textContent = error.message; } };
 $("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); const result = await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); $("local-status").textContent = result.message || (enabled ? "新しいPDFの自動監視を開始しました" : "自動監視を停止しました"); } catch (error) { $("local-status").textContent = error.message; } };
 $("scan").onclick = async () => { try { $("local-status").textContent = "スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/scan", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
-$("reformat").onclick = async () => { try { $("local-status").textContent = "履歴から再整理候補を作成中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/reformat-history", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の再整理候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
+$("reformat").onclick = async () => { try { $("local-status").textContent = "履歴から再整理・要確認PDFを再スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/reformat-history", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の再整理・再確認候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("apply").onclick = async () => {
   if (applyInProgress) return;
   const ids = [...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id);

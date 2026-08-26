@@ -48,3 +48,22 @@ def test_extra_metadata_is_kept_in_json_history(tmp_path: Path):
     stored = history.read()[0]
     assert stored["authors"] == ["Schmitt", "Lemon"]
     assert stored["language"] == "en"
+
+
+def test_latest_held_reviews_keeps_only_latest_record_per_source(tmp_path: Path):
+    history = HistoryLog(tmp_path / "logs")
+    source = tmp_path / "30-1-72.pdf"
+    for confidence in (0.2, 0.8):
+        history.append({
+            "action": "hold",
+            "status": "held",
+            "original_filename": source.name,
+            "original_path": str(source),
+            "title": "Review me",
+            "confidence": confidence,
+        })
+
+    latest = history.latest_held_reviews()
+    assert len(latest) == 1
+    assert latest[0]["original_path"] == str(source)
+    assert latest[0]["confidence"] == 0.8

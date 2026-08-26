@@ -82,6 +82,28 @@ class HistoryLog:
         latest.reverse()
         return latest
 
+    def latest_held_reviews(self) -> list[dict[str, Any]]:
+        """Return the latest held record for each unchanged source path.
+
+        These records are not trusted as reusable metadata. The GUI uses only
+        their source paths to run the current PDF extraction and verification
+        logic again without changing any file.
+        """
+
+        latest: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        for record in reversed(self.read()):
+            if record.get("status") != "held":
+                continue
+            original_path = record.get("original_path")
+            path_key = _path_key(original_path)
+            if not path_key or path_key in seen_paths:
+                continue
+            latest.append(record)
+            seen_paths.add(path_key)
+        latest.reverse()
+        return latest
+
 
 def _path_key(value: object) -> str:
     if not value:
