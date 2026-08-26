@@ -210,6 +210,24 @@ class AppState:
             self.message = f"スキャン完了: {len(found)}件。変更前後を確認してください"
         return len(found)
 
+    def scan_folder(self, folder: str | Path, recursive: bool | None = None) -> int:
+        """監視設定を変えずに、選んだフォルダ1つだけを確認する。"""
+
+        path = Path(str(folder).strip())
+        if not path.is_dir():
+            raise ValueError(f"フォルダが見つかりません: {path}")
+        with self._lock:
+            service = self._service()
+            include_subfolders = self.settings.recursive if recursive is None else bool(recursive)
+        found = BatchScanner(service).scan(path, recursive=include_subfolders)
+        with self._lock:
+            for candidate in found:
+                self._upsert(candidate)
+            self.message = (
+                f"「{path.name or path}」のスキャン完了: {len(found)}件。変更前後を確認してください"
+            )
+        return len(found)
+
     def reformat_history(self) -> int:
         """成功履歴を再整理し、過去の要確認PDFを最新ロジックで再確認する。"""
 
@@ -390,7 +408,7 @@ tr:last-child td { border-bottom: 0; }
 <h2>監視と設定</h2>
 <div class="guide">
 <p><strong>新しくダウンロードするPDF：</strong>フォルダを選択 → 設定を保存 → 「新しいPDFを自動監視」をON。</p>
-<p><strong>すでにあるPDF：</strong>フォルダを選択 → 設定を保存 → 「既存PDFをスキャン」 → 候補を確認 → リネーム。</p>
+<p><strong>すでにあるPDF：</strong>フォルダを選択 → 設定を保存 → 「既存PDFをスキャン」 → 候補を確認 → リネーム。特定のフォルダだけ整理したいときは「選んだフォルダだけスキャン」。</p>
 <p><strong>変更済み／過去に要確認のPDF：</strong>「履歴から再整理／要確認を再スキャン」で、変更済みPDFは保存情報から再整理し、要確認PDFは最新の照合方法で再確認します。</p>
 <p><strong>監視停止中に追加されたPDF：</strong>再起動後に候補として表示します。確認して実行するまで変更しません。</p>
 <p>設定を保存しただけではファイル名は変わりません。信頼度が低いPDFは安全のため保留になります。</p>
@@ -408,7 +426,8 @@ tr:last-child td { border-bottom: 0; }
 <label for="confidence">自動変更の信頼度基準（0.90以上）</label><input id="confidence" type="number" min="0.90" max="1" step="0.01">
 <label for="mailto">Crossref連絡先（任意）</label><input id="mailto" type="text" placeholder="your-name@example.com">
 <div class="inline"><input id="auto-start" type="checkbox"><label for="auto-start">Windows起動時に自動起動</label></div>
-<div class="actions"><button id="save">設定を保存（必須）</button><button id="scan" class="secondary">既存PDFをスキャン（変更なし）</button><button id="reformat" class="secondary">履歴から再整理／要確認を再スキャン（変更なし）</button><button id="undo" class="secondary">直近をUndo</button></div>
+<div class="actions"><button id="save">設定を保存（必須）</button><button id="scan" class="secondary">既存PDFをスキャン（変更なし）</button><button id="scan-folder" class="secondary">選んだフォルダだけスキャン（変更なし）</button><button id="reformat" class="secondary">履歴から再整理／要確認を再スキャン（変更なし）</button><button id="undo" class="secondary">直近をUndo</button></div>
+<p class="help">「選んだフォルダだけスキャン」は、監視対象フォルダを変えずにその場で選んだ1フォルダだけを確認します。監視対象が大きいときや、特定のフォルダだけ整理したいときに使ってください。上の「サブフォルダも監視」がONなら、その下のフォルダも見ます。</p>
 <p class="status-line" id="local-status"></p>
 </section>
 <section>
@@ -456,6 +475,21 @@ async function saveSettings(refreshNow=true) { const folders = $("folders").valu
 $("save").onclick = async () => { try { await saveSettings(); $("local-status").textContent = "設定を保存しました"; } catch (error) { $("local-status").textContent = error.message; } };
 $("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); const result = await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); $("local-status").textContent = result.message || (enabled ? "新しいPDFの自動監視を開始しました" : "自動監視を停止しました"); } catch (error) { $("local-status").textContent = error.message; } };
 $("scan").onclick = async () => { try { $("local-status").textContent = "スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/scan", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
+$("scan-folder").onclick = async () => {
+  const button = $("scan-folder");
+  if (button.disabled) return;
+  try {
+    $("local-status").textContent = "フォルダ選択ダイアログを開いています…";
+    const chosen = await api("/api/select-folder", {method:"POST", body:"{}"});
+    if (!chosen.path) { $("local-status").textContent = "フォルダ選択をキャンセルしました"; return; }
+    button.disabled = true;
+    $("local-status").textContent = `${chosen.path} をスキャン中…（変更はまだ行いません）`;
+    const result = await api("/api/scan-folder", {method:"POST", body:JSON.stringify({folder:chosen.path, recursive:$("recursive").checked})});
+    $("local-status").textContent = `${chosen.path} から${result.count}件の候補を作成しました`;
+    await refresh();
+  } catch (error) { $("local-status").textContent = error.message; }
+  finally { button.disabled = false; }
+};
 $("reformat").onclick = async () => { try { $("local-status").textContent = "履歴から再整理・要確認PDFを再スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/reformat-history", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の再整理・再確認候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("apply").onclick = async () => {
   if (applyInProgress) return;
@@ -532,6 +566,16 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.state.snapshot()
             elif path == "/api/scan":
                 result = {"count": self.state.scan()}
+            elif path == "/api/scan-folder":
+                folder = str(payload.get("folder") or "").strip()
+                if not folder:
+                    raise ValueError("スキャンするフォルダを指定してください")
+                recursive = payload.get("recursive")
+                result = {
+                    "count": self.state.scan_folder(
+                        folder, None if recursive is None else bool(recursive)
+                    )
+                }
             elif path == "/api/reformat-history":
                 result = {"count": self.state.reformat_history()}
             elif path == "/api/apply":

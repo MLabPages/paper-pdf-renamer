@@ -127,3 +127,49 @@ def test_gui_rechecks_held_pdf_with_current_resolver(tmp_path: Path) -> None:
     assert candidate["source_path"] == str(source)
     assert "Wong et al. (2003)" in candidate["destination_path"]
     assert "要確認の再スキャン 1件" in state.message
+
+
+def test_scan_folder_checks_only_the_chosen_folder(tmp_path: Path) -> None:
+    chosen = tmp_path / "顧客経験の測定"
+    chosen.mkdir()
+    (chosen / "target.pdf").write_bytes(b"pdf")
+    other = tmp_path / "別フォルダ"
+    other.mkdir()
+    (other / "untouched.pdf").write_bytes(b"pdf")
+    settings = Settings(
+        watch_folders=[str(tmp_path)],
+        history_dir=str(tmp_path / "logs"),
+        format_template="{author} ({year}). - {title}.pdf",
+    ).validate()
+    metadata = ResolvedMetadata(
+        "10.1234/example", "A Safe Paper", ("Schmitt",), 1999, "en", "crossref:doi", 0.99,
+        paper_type="journal-article",
+    )
+    seen: list[Path] = []
+    service = RenameService(
+        lambda path: seen.append(path) or metadata,
+        format_template=settings.format_template,
+    )
+
+    state = AppState(settings)
+    with patch.object(state, "_service", return_value=service):
+        assert state.scan_folder(chosen) == 1
+
+    assert seen == [chosen / "target.pdf"]
+    candidate = state.snapshot()["candidates"][0]
+    assert candidate["status"] == "ready"
+    assert candidate["destination_path"].endswith("Schmitt (1999). - A Safe Paper.pdf")
+    assert state.settings.watch_folders == [str(tmp_path)]
+
+
+def test_scan_folder_reports_missing_folder(tmp_path: Path) -> None:
+    settings = Settings(
+        watch_folders=[str(tmp_path)], history_dir=str(tmp_path / "logs")
+    ).validate()
+    state = AppState(settings)
+    try:
+        state.scan_folder(tmp_path / "ない")
+    except ValueError as exc:
+        assert "フォルダが見つかりません" in str(exc)
+    else:  # pragma: no cover - 失敗時のみ
+        raise AssertionError("存在しないフォルダはエラーにする")
