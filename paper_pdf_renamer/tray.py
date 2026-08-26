@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import webbrowser
 import threading
 from collections.abc import Callable
 from typing import Any
+
+from .desktop_window import open_app_window
 
 
 class TrayActions:
@@ -26,7 +27,7 @@ class TrayActions:
         self._refresh(icon)
 
     def open_ui(self, _icon: Any = None, _item: object | None = None) -> None:
-        webbrowser.open(self.url)
+        open_app_window(self.url)
 
     def exit(self, icon: Any = None, _item: object | None = None) -> None:
         self.shutdown()

@@ -3,8 +3,10 @@
 )
 
 $ErrorActionPreference = "Stop"
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\")).Path
-$python = Join-Path $repoRoot ".venv\Scripts\python.exe"
+$repoRoot = $PSScriptRoot
+if (-not (Test-Path -LiteralPath (Join-Path $repoRoot "dist\論文PDFファイル名整理"))) {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\")).Path
+}
 $sourceDir = Join-Path $repoRoot "dist\論文PDFファイル名整理"
 $sourceExe = Join-Path $sourceDir "論文PDFファイル名整理.exe"
 $installDir = Join-Path $env:LOCALAPPDATA "Programs\PaperPdfRenamer"
@@ -12,22 +14,24 @@ $installDir = Join-Path $env:LOCALAPPDATA "Programs\PaperPdfRenamer"
 if (-not (Test-Path -LiteralPath $sourceExe)) {
     throw "ビルド済みEXEが見つかりません。先に build_windows.ps1 を実行してください。"
 }
-if (-not (Test-Path -LiteralPath $python)) {
-    throw ".venv が見つかりません。"
-}
-
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 Copy-Item -Path (Join-Path $sourceDir "*") -Destination $installDir -Recurse -Force
 $installedExe = Join-Path $installDir "論文PDFファイル名整理.exe"
 
-$shortcutArgs = @(
-    "-m", "paper_pdf_renamer.cli", "shortcut",
-    "--executable", $installedExe,
-    "--start-menu"
+$shell = New-Object -ComObject WScript.Shell
+$shortcutPaths = @(
+    (Join-Path ([Environment]::GetFolderPath("Programs")) "論文PDFファイル名整理.lnk")
 )
-if (-not $SkipDesktop) { $shortcutArgs += "--desktop" }
-& $python @shortcutArgs
-if ($LASTEXITCODE -ne 0) { throw "スタートメニュー登録に失敗しました。" }
+if (-not $SkipDesktop) {
+    $shortcutPaths += Join-Path ([Environment]::GetFolderPath("Desktop")) "論文PDFファイル名整理.lnk"
+}
+foreach ($shortcutPath in $shortcutPaths) {
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $installedExe
+    $shortcut.WorkingDirectory = $installDir
+    $shortcut.IconLocation = "$installedExe,0"
+    $shortcut.Save()
+}
 
 # 既存設定が自動起動ONなら、Windows起動時もPython版ではなく今回のEXEを使う。
 $settingsPath = Join-Path $env:APPDATA "paper-pdf-renamer\settings.json"

@@ -7,7 +7,6 @@ import os
 import socket
 import subprocess
 import threading
-import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +16,7 @@ from uuid import uuid4
 
 from .config import Settings, validate_format_template
 from .crossref import CrossrefClient, resolve_metadata
+from .desktop_window import open_app_window
 from .history import HistoryLog
 from .instance import SingleInstanceLock, clear_server_state, read_server_port, write_server_state
 from .models import RenameCandidate
@@ -616,7 +616,7 @@ def run_server(port: int = 8766, open_browser: bool = True, tray: bool | None = 
         existing_port = read_server_port() or port
         url = f"http://127.0.0.1:{existing_port}/"
         if open_browser:
-            threading.Timer(0.35, lambda: webbrowser.open(url)).start()
+            threading.Timer(0.35, lambda: open_app_window(url)).start()
         print(f"論文PDFファイル名整理は起動済みです: {url}")
         return 0
 
@@ -632,7 +632,7 @@ def run_server(port: int = 8766, open_browser: bool = True, tray: bool | None = 
         write_server_state(actual_port)
         url = f"http://127.0.0.1:{actual_port}/"
         if open_browser:
-            threading.Timer(0.35, lambda: webbrowser.open(url)).start()
+            threading.Timer(0.35, lambda: open_app_window(url)).start()
         print(f"論文PDFファイル名整理: {url}")
         use_tray = os.name == "nt" if tray is None else tray
         if use_tray:

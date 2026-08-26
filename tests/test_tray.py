@@ -58,7 +58,7 @@ def test_tray_open_and_exit() -> None:
     shutdown = []
     actions = TrayActions(state, "http://127.0.0.1:8766/", lambda: shutdown.append(True))
 
-    with patch("paper_pdf_renamer.tray.webbrowser.open") as opened:
+    with patch("paper_pdf_renamer.tray.open_app_window") as opened:
         actions.open_ui()
     opened.assert_called_once_with("http://127.0.0.1:8766/")
 
