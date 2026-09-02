@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paper-pdf-renamer"
-version = "0.1.0"
+version = "0.1.1"
 description = "安全側に倒したローカル論文PDFファイル名整理ツール"
 readme = "README.md"
 requires-python = ">=3.10"
