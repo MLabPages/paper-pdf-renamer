@@ -182,8 +182,20 @@ def test_title_after_chapter_cover_is_recovered():
     assert authors == ("Hirofumi Katsuno", "Daniel White")
 
 
-def test_translation_markers_and_document_language_are_detected():
+def test_translation_markers_only_match_explicit_filename_edges():
+    assert has_translation_marker("[ja] paper.pdf")
     assert has_translation_marker("paper_ja.pdf")
     assert has_translation_marker("paper_日本語訳.pdf")
+    assert not has_translation_marker(
+        "Cross-Cultural Differences ... Japanese Actions and Feelings.pdf"
+    )
+    assert not has_translation_marker("Translation and Validation of a Scale.pdf")
+    assert not has_translation_marker("translated scale.pdf")
     assert not has_translation_marker("japan-paper.pdf")
+
+
+def test_translation_marker_removal_uses_the_same_explicit_marker_rules():
+    assert has_translation_marker("[ja] paper.pdf")
+    assert has_translation_marker("paper_日本語訳.pdf")
+    assert not has_translation_marker("Translation and Validation of a Scale.pdf")
     assert detect_document_language("日本語の文章。" * 100 + " English") == "ja"

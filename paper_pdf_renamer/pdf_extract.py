@@ -9,13 +9,16 @@ from .models import LocalEvidence
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 _GENERIC_TITLES = {"untitled", "microsoft word", "adobe acrobat", "pdf"}
 _GENERIC_AUTHORS = {"author", "authors", "research", "unknown", "none", "n/a"}
+_TRANSLATION_MARKER_TOKEN = r"(?:\[ja\]|ja|jpn|日本語訳|日本語|翻訳)"
+_TRANSLATION_MARKER_BOUNDARY = r"[\s._()\[\]-]"
 _TRANSLATION_MARKER_RE = re.compile(
-    r"(?:^|[\s._()\[\]-])(?:ja|jpn|japanese|日本語|日本語訳|翻訳|translated|translation)(?:$|[\s._()\[\]-])",
+    rf"(?:^\s*{_TRANSLATION_MARKER_TOKEN}(?=$|{_TRANSLATION_MARKER_BOUNDARY})|"
+    rf"{_TRANSLATION_MARKER_BOUNDARY}{_TRANSLATION_MARKER_TOKEN}\s*$)",
     re.IGNORECASE,
 )
 # Readableなどで翻訳したPDFに手動で付ける先頭の印（例: ``[ja] タイトル``）。
 _TRANSLATION_MARKER_PREFIX_RE = re.compile(
-    r"^[\s._()\[\]-]*(?:ja|jpn|japanese|日本語|日本語訳|翻訳|translated|translation)[\s._()\[\]-]+",
+    rf"^[\s._()\[\]-]*{_TRANSLATION_MARKER_TOKEN}(?:{_TRANSLATION_MARKER_BOUNDARY}+|$)",
     re.IGNORECASE,
 )
 
@@ -72,7 +75,7 @@ def detect_document_language(text: str | None) -> str | None:
 
 
 def has_translation_marker(value: str | Path | None) -> bool:
-    """ファイル名に翻訳版を示す一般的な印があるか確認する。"""
+    """ファイル名の先頭または末尾に明示的な翻訳印があるか確認する。"""
 
     if not value:
         return False
