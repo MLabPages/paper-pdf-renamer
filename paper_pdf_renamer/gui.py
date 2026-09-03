@@ -319,9 +319,14 @@ class AppState:
             started += 1
         with self._lock:
             self.monitoring = started > 0
-            self.settings.monitor_enabled = started > 0
-            self.settings.save()
-            self.message = f"監視中（{started}フォルダ）" if started else "監視対象フォルダが見つかりません"
+            if started > 0:
+                self.settings.monitor_enabled = True
+                self.settings.save()
+                self.message = f"監視中（{started}フォルダ）"
+            else:
+                # フォルダが見つからなくても設定は保持したまま監視状態だけ更新する
+                self.monitoring = False
+                self.message = "監視対象フォルダが見つかりません"
 
     def stop_monitor(self, persist: bool = True) -> None:
         watchers, self._watchers = self._watchers, []
