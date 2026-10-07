@@ -4,6 +4,7 @@ import base64
 import binascii
 import json
 import os
+import secrets
 import socket
 import subprocess
 import threading
@@ -19,7 +20,8 @@ from .config import Settings, validate_format_template
 from .crossref import CrossrefClient, resolve_metadata
 from .desktop_window import DesktopWindow
 from .history import HistoryLog
-from .instance import SingleInstanceLock, clear_server_state, read_server_port, write_server_state
+from .instance import SingleInstanceLock, clear_server_state, read_server_port, read_server_token, write_server_state
+from .http_security import request_error
 from .models import RenameCandidate
 from .operations import BatchScanner, PollingWatcher, RenameService, metadata_from_history
 from .pdf_extract import extract_pdf
@@ -451,10 +453,19 @@ tr:last-child td { border-bottom: 0; }
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
+const csrfToken = "__LOCAL_CSRF_TOKEN__";
 let settingsDirty = false;
 let lastServerSettings = null;
 let applyInProgress = false;
-async function api(url, options={}) { const response = await fetch(url, {headers:{"Content-Type":"application/json"}, ...options}); const data = await response.json(); if (!response.ok) throw new Error(data.error || "通信に失敗しました"); return data; }
+async function api(url, options={}) {
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  if (!["GET", "HEAD"].includes((options.method || "GET").toUpperCase())) headers.set("X-CSRF-Token", csrfToken);
+  const response = await fetch(url, {...options, headers});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "通信に失敗しました");
+  return data;
+}
 function cell(row, value, className="") { const td = document.createElement("td"); td.textContent = value ?? "—"; if (className) td.className = className; row.appendChild(td); return td; }
 function formSettingsSnapshot() { return {folders:$("folders").value,recursive:$("recursive").checked,format:$("format").value,maxTitle:$("max-title").value,confidence:$("confidence").value,mailto:$("mailto").value,autoStart:$("auto-start").checked}; }
 function selectedCandidateIds() { return new Set([...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id)); }
@@ -523,6 +534,14 @@ refresh(); setInterval(refresh, 2000);
 class Handler(BaseHTTPRequestHandler):
     state: AppState
 
+    def _check_request(self, *, mutation: bool = False) -> bool:
+        error = request_error(self, mutation=mutation)
+        if error:
+            status, message = error
+            self._json(status, {"error": message})
+            return False
+        return True
+
     def log_message(self, format: str, *args: object) -> None:
         return
 
@@ -531,6 +550,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -545,12 +566,17 @@ class Handler(BaseHTTPRequestHandler):
         return value
 
     def do_GET(self) -> None:
+        if not self._check_request():
+            return
         path = urlparse(self.path).path
         if path == "/":
-            encoded = HTML.encode("utf-8")
+            encoded = HTML.replace("__LOCAL_CSRF_TOKEN__", self.server.csrf_token).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             self.wfile.write(encoded)
         elif path == "/api/state":
@@ -559,6 +585,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:
+        if not self._check_request(mutation=True):
+            return
         path = urlparse(self.path).path
         try:
             payload = self._body()
@@ -628,7 +656,8 @@ def run_server(port: int = 8766, open_browser: bool = True, tray: bool | None = 
         if open_browser:
             try:
                 request = urllib.request.Request(
-                    f"{url}api/show-window", data=b"{}", method="POST"
+                    f"{url}api/show-window", data=b"{}", method="POST",
+                    headers={"Content-Type": "application/json", "X-CSRF-Token": read_server_token() or ""},
                 )
                 urllib.request.urlopen(request, timeout=2).close()
             except OSError:
@@ -645,7 +674,9 @@ def run_server(port: int = 8766, open_browser: bool = True, tray: bool | None = 
         handler = type("PaperPdfRenamerHandler", (Handler,), {"state": state})
         actual_port = _available_port(port)
         server = ThreadingHTTPServer(("127.0.0.1", actual_port), handler)
-        write_server_state(actual_port)
+        server.csrf_token = secrets.token_urlsafe(32)
+        actual_port = server.server_port
+        write_server_state(actual_port, server.csrf_token)
         url = f"http://127.0.0.1:{actual_port}/"
         print(f"論文PDFファイル名整理: {url}")
         use_tray = os.name == "nt" if tray is None else tray

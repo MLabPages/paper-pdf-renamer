@@ -69,11 +69,11 @@ def server_state_path() -> Path:
     return app_data_dir() / "server.json"
 
 
-def write_server_state(port: int) -> Path:
+def write_server_state(port: int, csrf_token: str | None = None) -> Path:
     target = server_state_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f"{target.name}.tmp")
-    temporary.write_text(json.dumps({"port": port}), encoding="utf-8")
+    temporary.write_text(json.dumps({"port": port, "csrf_token": csrf_token}), encoding="utf-8")
     temporary.replace(target)
     return target
 
@@ -81,10 +81,21 @@ def write_server_state(port: int) -> Path:
 def read_server_port() -> int | None:
     try:
         payload = json.loads(server_state_path().read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
         port = int(payload.get("port"))
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
     return port if 1 <= port <= 65535 else None
+
+
+def read_server_token() -> str | None:
+    try:
+        payload = json.loads(server_state_path().read_text(encoding="utf-8"))
+        value = payload.get("csrf_token") if isinstance(payload, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+    return value if isinstance(value, str) and value else None
 
 
 def clear_server_state(port: int | None = None) -> None:
