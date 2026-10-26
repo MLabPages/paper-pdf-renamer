@@ -18,6 +18,28 @@ def test_normalize_doi():
     assert normalize_doi("not a doi") is None
 
 
+def test_visible_doi_recovers_spaces_only_in_labeled_span():
+    def page(text):
+        return {"blocks": [{"lines": [{"spans": [{"text": text}]}]}]}
+
+    assert _visible_doi([page("d oi 10.2478 / nim mir-2026- 0004")]) == "10.2478/nimmir-2026-0004"
+    assert _visible_doi([page("We discuss 10.2478 / unrelated prose")]) is None
+
+
+def test_layout_title_joins_detached_magazine_subtitle_without_body():
+    def block(text, size, bbox):
+        return {"type": 0, "bbox": bbox, "lines": [{"spans": [{"text": text, "size": size}]}]}
+
+    page = {"height": 842, "blocks": [
+        block("Your Next Respondent Might Be an LLM", 55, (42, 162, 397, 341)),
+        block("Guidelines for Using Silicon Samples in Marketing Research", 31, (46, 441, 231, 616)),
+        block("Silicon samples: what they are and how they work", 11, (42, 620, 500, 680)),
+    ]}
+    assert _layout_title([page]) == (
+        "Your Next Respondent Might Be an LLM Guidelines for Using Silicon Samples in Marketing Research"
+    )
+
+
 def test_layout_title_uses_prominent_heading_and_joins_wrapped_blocks():
     page = {
         "height": 800,

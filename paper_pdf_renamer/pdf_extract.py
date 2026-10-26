@@ -430,6 +430,11 @@ def _layout_title(page_dicts: list[dict]) -> str | None:
     # Some publishers store each wrapped title line as a separate block.
     # Join only immediately adjacent blocks with essentially the same font.
     page = page_dicts[page_index]
+    title_bbox = next(
+        (block.get("bbox") for block in page.get("blocks", [])
+         if block.get("bbox") and float(block["bbox"][1]) == y0),
+        (0, y0, 0, y0),
+    )
     continuations: list[tuple[float, str]] = []
     ordered_blocks = sorted(page.get("blocks", []), key=lambda block: float((block.get("bbox") or (0, 0, 0, 0))[1]))
     for block in ordered_blocks:
@@ -437,7 +442,11 @@ def _layout_title(page_dicts: list[dict]) -> str | None:
             continue
         bbox = block.get("bbox") or (0, 0, 0, 0)
         block_y = float(bbox[1])
-        if block_y <= y0 or block_y - y0 > size * 4.5:
+        detached_subtitle_position = (
+            0 <= block_y - float(title_bbox[3]) <= size * 2
+            and abs(float(bbox[0]) - float(title_bbox[0])) <= size * 0.25
+        )
+        if block_y <= y0 or (block_y - y0 > size * 4.5 and not detached_subtitle_position):
             continue
         spans = [span for line in block.get("lines", []) for span in line.get("spans", [])]
         text = _clean(" ".join(str(span.get("text") or "") for span in spans))
@@ -448,6 +457,17 @@ def _layout_title(page_dicts: list[dict]) -> str | None:
         size_difference = abs(max(sizes) - size)
         same_title_size = size_difference <= max(1.0, size * 0.12)
         subtitle_size = size_difference <= max(1.0, size * 0.35) and len(words) >= 4
+        # Magazine covers can separate a large heading from its smaller
+        # subtitle with an illustration or arrow. Require aligned, prominent
+        # text close to the bottom of the heading, never ordinary body text.
+        detached_subtitle = (
+            detached_subtitle_position
+            and size >= 30
+            and max(sizes) >= 18
+            and size * 0.5 <= max(sizes) < size
+            and len(words) >= 4
+            and _looks_like_title(text)
+        )
         if _looks_like_author_line(text) and not same_title_size:
             # Once the visible byline begins, affiliation blocks below it must
             # never be appended to the title.
@@ -456,7 +476,7 @@ def _layout_title(page_dicts: list[dict]) -> str | None:
             len(text) <= 180
             and not DOI_RE.search(text)
             and (not _looks_like_author_line(text) or same_title_size)
-            and (same_title_size or subtitle_size)
+            and (same_title_size or subtitle_size or detached_subtitle)
         ):
             continuations.append((block_y, text))
     for _, continuation in sorted(continuations):
@@ -473,7 +493,17 @@ def _visible_dois(page_dicts: list[dict]) -> tuple[str, ...]:
         for block in page.get("blocks", []):
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
-                    candidate = normalize_doi(str(span.get("text") or ""))
+                    text = str(span.get("text") or "")
+                    candidate = normalize_doi(text)
+                    # Some magazine exports insert spaces within a labeled
+                    # DOI. Only compact a complete, explicitly labeled span;
+                    # never join arbitrary prose or neighboring text blocks.
+                    spaced = re.fullmatch(
+                        r"\s*d\s*o\s*i\s*:?\s*(10\.\d{4,9}\s*/\s*[-._;()/:A-Z0-9\s]+)\s*",
+                        text, re.IGNORECASE,
+                    )
+                    if spaced:
+                        candidate = normalize_doi(re.sub(r"\s+", "", spaced.group(1)))
                     if candidate and candidate not in candidates:
                         candidates.append(candidate)
     return tuple(candidates)
