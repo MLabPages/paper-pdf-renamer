@@ -79,6 +79,8 @@ class RenameCandidate:
     metadata: ResolvedMetadata
     status: str
     reasons: list[str] = field(default_factory=list)
+    translation_options: dict[str, str] = field(default_factory=dict)
+    translation_service: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -91,4 +93,6 @@ class RenameCandidate:
             "status": self.status,
             "reasons": list(self.reasons),
             "metadata": self.metadata.to_dict(),
+            "translation_options": self.translation_options,
+            "translation_service": self.translation_service,
         }

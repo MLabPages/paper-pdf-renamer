@@ -9,6 +9,23 @@ from .models import ResolvedMetadata
 
 INVALID_WINDOWS = re.compile(r"[\\/:*?\"<>|]")
 JA_MARKER = "[ja]"
+TRANSLATION_SERVICES = ("DeepL", "PLaMo")
+_TRANSLATION_SERVICE_RE = re.compile(
+    r"^\[ja\]\s+\[(DeepL|PLaMo)\](?=\s|$)\s*", re.IGNORECASE
+)
+
+
+def translation_service(stem: str) -> str | None:
+    match = _TRANSLATION_SERVICE_RE.match(stem)
+    if match:
+        return next(name for name in TRANSLATION_SERVICES if name.casefold() == match[1].casefold())
+    return None
+
+
+def strip_translation_service(stem: str) -> str:
+    return _TRANSLATION_SERVICE_RE.sub("", stem, count=1)
+
+
 # 翻訳版の印は、Readableなどで手動で付けた先頭表記に合わせて先頭に置く。
 _JA_MARKER_PREFIX_RE = re.compile(
     r"^[\s._()\[\]-]*(?:ja|jpn|日本語|翻訳)(?:$|[\s._()\[\]-])", re.IGNORECASE
@@ -102,6 +119,9 @@ def build_filename(
     source: Path | None = None,
     max_path_length: int = 260,
     format_template: str = FORMAT_TEMPLATE,
+    service: str | None = None,
+    *,
+    ensure_unique: bool = True,
 ) -> Path:
     if not metadata.title or not metadata.first_author or not metadata.year:
         raise ValueError("著者・出版年・タイトルが揃っていません")
@@ -129,10 +149,14 @@ def build_filename(
             rendered += ".pdf"
         if metadata.translated:
             stem, extension = rendered[:-4], rendered[-4:]
-            if not _JA_MARKER_PREFIX_RE.match(stem) and not _JA_MARKER_SUFFIX_RE.search(stem):
+            if service:
+                stem = _JA_MARKER_PREFIX_RE.sub("", stem, count=1).lstrip(" ]._-)")
+                stem = _JA_MARKER_SUFFIX_RE.sub("", stem, count=1).rstrip()
+                rendered = f"{JA_MARKER} [{service}] {stem}{extension}"
+            elif not _JA_MARKER_PREFIX_RE.match(stem) and not _JA_MARKER_SUFFIX_RE.search(stem):
                 rendered = f"{JA_MARKER} {stem.lstrip()}{extension}"
         filename = sanitize_component(rendered)
         if len(str(directory_path / filename)) <= max_path_length:
             break
     destination = directory_path / filename
-    return unique_destination(destination, source=source)
+    return unique_destination(destination, source=source) if ensure_unique else destination

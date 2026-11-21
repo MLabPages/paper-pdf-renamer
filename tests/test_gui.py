@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from paper_pdf_renamer.config import Settings
 from paper_pdf_renamer.gui import AppState, _warning_text, run_server, select_windows_folder
 from paper_pdf_renamer.history import HistoryLog
@@ -13,6 +15,39 @@ from paper_pdf_renamer.operations import RenameService
 
 def test_gui_uses_port_separate_from_translator() -> None:
     assert inspect.signature(run_server).parameters["port"].default == 8766
+
+
+def test_duplicate_translation_waits_for_service_selection_and_can_be_undone(tmp_path: Path) -> None:
+    metadata = ResolvedMetadata(
+        "10.1234/example", "A Safe Paper", ("Schmitt",), 1999, "en",
+        "crossref:doi", 0.99, translated=True,
+    )
+    state = AppState(Settings(history_dir=str(tmp_path / "logs")))
+    service = RenameService(lambda _: metadata, history=state.history)
+    first = tmp_path / "first_日本語訳.pdf"
+    first.write_bytes(b"DeepL")
+    existing = service.process(first).destination_path
+    assert existing is not None
+    source = existing.with_name(existing.stem + " (2).pdf")
+    source.write_bytes(b"PLaMo")
+
+    candidate = service.process(source)
+    assert candidate.status == "held"
+    state._upsert(candidate)
+    row = state.snapshot()["candidates"][0]
+    assert set(row["translation_options"]) == {"DeepL", "PLaMo"}
+    with pytest.raises(ValueError, match="翻訳サービス"):
+        state.apply([row["id"]])
+    assert source.read_bytes() == b"PLaMo"
+
+    assert state.apply([row["id"]], {row["id"]: "PLaMo"}) == 1
+    destination = tmp_path / row["translation_options"]["PLaMo"]
+    assert destination.name.startswith("[ja] [PLaMo] ")
+    assert destination.read_bytes() == b"PLaMo"
+    assert existing.read_bytes() == b"DeepL"
+    assert service.make_candidate(destination).reasons == ["already-correct-name"]
+    assert state.undo()["status"] == "undone"
+    assert source.read_bytes() == b"PLaMo"
 
 
 def test_openalex_warning_is_shown_in_japanese() -> None:

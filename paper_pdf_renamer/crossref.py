@@ -186,8 +186,10 @@ def _openalex_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _filename_evidence(evidence: LocalEvidence) -> tuple[str | None, int | None]:
+    from .filename import strip_translation_service
+
     # 先頭の ``[ja]`` などの翻訳印は著者名ではないので、照合前に取り除く。
-    stem = strip_translation_marker(evidence.path.stem)
+    stem = strip_translation_marker(strip_translation_service(evidence.path.stem))
     author = re.split(r"\s+(?:&|et\s+al\.?|ほか)|\s*\(", stem, maxsplit=1, flags=re.IGNORECASE)[0]
     author = re.sub(r"^al-", "", author, flags=re.IGNORECASE).strip(" ._-") or None
     if author and len(re.sub(r"\W", "", author, flags=re.UNICODE)) < 2:

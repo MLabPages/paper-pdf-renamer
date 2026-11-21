@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .config import FORMAT_TEMPLATE, validate_format_template
-from .filename import build_filename
+from .filename import TRANSLATION_SERVICES, build_filename, translation_service, unique_destination
 from .history import HistoryLog
 from .models import RenameCandidate, ResolvedMetadata
 from .pdf_extract import extract_pdf, has_translation_marker
@@ -139,7 +140,9 @@ class RenameService:
             return RenameCandidate(source, None, metadata, "failed", list(metadata.reasons))
         return self.make_candidate_from_metadata(source, metadata)
 
-    def make_candidate_from_metadata(self, path: str | Path, metadata: ResolvedMetadata) -> RenameCandidate:
+    def make_candidate_from_metadata(
+        self, path: str | Path, metadata: ResolvedMetadata, *, service: str | None = None
+    ) -> RenameCandidate:
         """既存の検証済みメタデータだけで再整理候補を作る。"""
 
         source = Path(path)
@@ -148,16 +151,44 @@ class RenameService:
             reasons.append("low-confidence")
         if reasons or not metadata.safe_to_rename:
             return RenameCandidate(source, None, metadata, "held", list(dict.fromkeys(reasons)))
+        service = service or translation_service(source.stem)
         try:
             destination = build_filename(
                 metadata, source=source, max_title_length=self.max_title_length,
-                format_template=self.format_template,
+                format_template=self.format_template, service=service, ensure_unique=False,
             )
+            if destination.resolve() == source.resolve():
+                return RenameCandidate(source, destination, metadata, "held", ["already-correct-name"])
+            if metadata.translated and not service:
+                options = self._translation_options(source, metadata, destination)
+                if options:
+                    return RenameCandidate(
+                        source, None, metadata, "held", ["choose-translation-service"], options
+                    )
+            destination = unique_destination(destination, source)
         except Exception as exc:
             return RenameCandidate(source, None, metadata, "held", [f"filename-generation-failed:{type(exc).__name__}"])
-        if destination.resolve() == source.resolve():
-            return RenameCandidate(source, destination, metadata, "held", ["already-correct-name"])
-        return RenameCandidate(source, destination, metadata, "ready", [])
+        return RenameCandidate(source, destination, metadata, "ready", [], translation_service=service)
+
+    def _translation_options(
+        self, source: Path, metadata: ResolvedMetadata, destination: Path
+    ) -> dict[str, str]:
+        tagged = {
+            service: build_filename(
+                metadata, source=source, max_title_length=self.max_title_length,
+                format_template=self.format_template, service=service, ensure_unique=False,
+            )
+            for service in TRANSLATION_SERVICES
+        }
+        stems = {path.stem.casefold() for path in (destination, *tagged.values())}
+        siblings = any(
+            path.suffix.casefold() == ".pdf"
+            and path.name.casefold() != source.name.casefold()
+            and re.sub(r" \([0-9]+\)$", "", path.stem.casefold()) in stems
+            and path.is_file()
+            for path in source.parent.iterdir()
+        )
+        return {name: unique_destination(path, source).name for name, path in tagged.items()} if siblings else {}
 
     def rename_candidate(self, candidate: RenameCandidate) -> RenameCandidate:
         if not candidate.ready:
@@ -178,17 +209,16 @@ class RenameService:
             updated = replace(candidate, status="held", reasons=["source-file-missing"])
             self._log(updated, "hold")
             return updated
-        destination = build_filename(
-            candidate.metadata, directory=source.parent, source=source,
-            max_title_length=self.max_title_length, format_template=self.format_template,
+        refreshed = self.make_candidate_from_metadata(
+            source, candidate.metadata, service=candidate.translation_service,
         )
+        if not refreshed.ready:
+            self._log(refreshed, "hold")
+            return refreshed
+        destination = refreshed.destination_path
+        assert destination is not None
         try:
             # Path.renameは既存先への上書きを避けるため、事前に再確認する。
-            if destination.exists() and destination.resolve() != source.resolve():
-                destination = build_filename(
-                    candidate.metadata, directory=source.parent, source=source,
-                    max_title_length=self.max_title_length, format_template=self.format_template,
-                )
             if destination.exists() and destination.resolve() != source.resolve():
                 raise FileExistsError(str(destination))
             source.rename(destination)
@@ -289,6 +319,8 @@ class BatchScanner:
                 source_path=Path(item["source_path"]),
                 destination_path=Path(item["destination_path"]) if item.get("destination_path") else None,
                 metadata=metadata, status=item.get("status", "held"), reasons=list(item.get("reasons", [])),
+                translation_options=item.get("translation_options", {}),
+                translation_service=item.get("translation_service"),
             ))
         return result
 
@@ -393,10 +425,8 @@ class PollingWatcher:
                 )
             results.append(result)
             self._processed.add(path)
-            if key in self._startup_pending:
-                # ユーザーが候補を実行するまで、次回起動でも再表示できるよう
-                # pendingに残す。現在のプロセスでは重複表示しない。
-                pass
+            if key in self._startup_pending or result.translation_options:
+                self._startup_pending[key] = path
             else:
                 self._known[key] = path
             if result.status == "renamed" and result.destination_path and result.destination_path.is_file():

@@ -48,6 +48,7 @@ REASON_LABELS = {
     "already-correct-name": "すでに候補名です",
     "source-file-missing": "別の処理で先に変更された可能性があります",
     "added-while-stopped": "監視停止中に追加されたPDFです。確認後に実行してください",
+    "choose-translation-service": "同じ論文の日本語訳があります。今回の翻訳サービスを選んでください",
 }
 WARNING_LABELS = {
     "author-mismatch": "著者は補助照合で不一致ですが、DOI・タイトル等を優先しました",
@@ -275,23 +276,38 @@ class AppState:
             )
         return len(found)
 
-    def apply(self, candidate_ids: list[str]) -> int:
+    def apply(self, candidate_ids: list[str], translation_services: dict[str, str] | None = None) -> int:
         with self._lock:
-            selected = [self._candidates[item] for item in candidate_ids if item in self._candidates]
-            ready = [candidate for candidate in selected if candidate.ready]
-            if not ready:
-                self.message = "実行可能な候補が選択されていません"
-                return 0
             with self._rename_lock:
-                results = BatchScanner(self._service()).execute_approved(ready, [item.source_path for item in ready])
+                service = self._service()
+                ready = []
+                for item in dict.fromkeys(candidate_ids):
+                    candidate = self._candidates.get(item)
+                    if candidate is None:
+                        continue
+                    if candidate.translation_options:
+                        name = (translation_services or {}).get(item)
+                        if not isinstance(name, str) or name not in candidate.translation_options:
+                            raise ValueError("翻訳サービスを選んでください")
+                        selected = service.make_candidate_from_metadata(
+                            candidate.source_path, candidate.metadata, service=name
+                        )
+                        if not selected.destination_path or selected.destination_path.name != candidate.translation_options[name]:
+                            self._upsert(service.make_candidate_from_metadata(candidate.source_path, candidate.metadata))
+                            raise ValueError("変更後のファイル名が変わりました。候補を確認し直してください")
+                        candidate = selected
+                    if candidate.ready:
+                        ready.append(candidate)
+                results = BatchScanner(service).execute_approved(ready, [item.source_path for item in ready])
             for result in results:
                 self._upsert(result)
                 if result.status == "renamed" and result.destination_path:
                     self.watch_manifest.complete(result.source_path, result.destination_path)
                     for watcher, _, _ in self._watchers:
                         watcher.mark_completed(result.source_path, result.destination_path)
-            self.message = f"{len(results)}件を変更しました"
-            return len(results)
+            count = sum(result.status == "renamed" for result in results)
+            self.message = f"{count}件を変更しました" if results else "実行可能な候補が選択されていません"
+            return count
 
     def undo(self) -> dict[str, Any]:
         with self._lock:
@@ -469,9 +485,13 @@ async function api(url, options={}) {
 function cell(row, value, className="") { const td = document.createElement("td"); td.textContent = value ?? "—"; if (className) td.className = className; row.appendChild(td); return td; }
 function formSettingsSnapshot() { return {folders:$("folders").value,recursive:$("recursive").checked,format:$("format").value,maxTitle:$("max-title").value,confidence:$("confidence").value,mailto:$("mailto").value,autoStart:$("auto-start").checked}; }
 function selectedCandidateIds() { return new Set([...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id)); }
+function translationSelections() {
+  return Object.fromEntries([...$("candidates").querySelectorAll("select")].map(select => [select.dataset.id, select.value]));
+}
 function render(state) {
   const s = state.settings;
   const selectedIds = selectedCandidateIds();
+  const selections = translationSelections();
   const userChanged = settingsDirty || (lastServerSettings !== null && JSON.stringify(formSettingsSnapshot()) !== JSON.stringify(lastServerSettings));
   if (!userChanged) {
     $("folders").value = s.watch_folders.join("\n"); $("recursive").checked = s.recursive; $("format").value = s.format_template;
@@ -483,12 +503,49 @@ function render(state) {
   $("message").textContent = state.message || "";
   const candidates = $("candidates"); candidates.replaceChildren();
   if (!state.candidates.length) { const row = candidates.insertRow(); const td = row.insertCell(); td.colSpan = 6; td.className = "empty"; td.textContent = "候補はありません。既存PDFなら「既存PDFをスキャン」または「履歴から再整理／要確認を再スキャン」、新規PDFなら「新しいPDFを自動監視」を使ってください。"; }
-  for (const item of state.candidates.slice().reverse()) { const row = candidates.insertRow(); const check = row.insertCell(); if (item.status === "ready") { const input = document.createElement("input"); input.type = "checkbox"; input.dataset.id = item.id; input.checked = selectedIds.has(item.id); check.appendChild(input); } cell(row, item.status_label, item.status); cell(row, item.source_path && item.source_path.split(/[\\/]/).pop()); cell(row, item.destination_path && item.destination_path.split(/[\\/]/).pop()); cell(row, `${Math.round(Number(item.metadata.confidence || 0) * 100)}%`); const detail = item.reason_text || item.warning_text || "—"; const detailClass = item.status === "held" ? "hold" : item.status === "failed" ? "failed" : item.warning_text ? "warning" : ""; cell(row, detail, detailClass); }
+  for (const item of state.candidates.slice().reverse()) {
+    const row = candidates.insertRow();
+    const check = row.insertCell();
+    const sourceName = item.source_path.split(/[\\/]/).pop();
+    const options = Object.keys(item.translation_options);
+    const input = document.createElement("input");
+    if (item.status === "ready" || options.length) {
+      input.type = "checkbox";
+      input.dataset.id = item.id;
+      input.checked = selectedIds.has(item.id);
+      input.setAttribute("aria-label", sourceName + "をリネームする");
+      check.appendChild(input);
+    }
+    cell(row, item.status_label, item.status);
+    cell(row, sourceName);
+    const destination = cell(row, item.destination_path?.split(/[\\/]/).pop());
+    if (options.length) {
+      const select = document.createElement("select");
+      select.dataset.id = item.id;
+      select.setAttribute("aria-label", sourceName + "の翻訳サービス");
+      select.add(new Option("翻訳サービスを選ぶ", ""));
+      for (const name of options) select.add(new Option(name, name));
+      select.value = selections[item.id] || "";
+      const preview = document.createElement("div");
+      const updatePreview = () => {
+        input.disabled = !select.value;
+        if (input.disabled) input.checked = false;
+        preview.textContent = item.translation_options[select.value] || "";
+      };
+      select.onchange = updatePreview;
+      updatePreview();
+      destination.replaceChildren(select, preview);
+    }
+    cell(row, Math.round(Number(item.metadata.confidence || 0) * 100) + "%");
+    const detail = item.reason_text || item.warning_text || "—";
+    const detailClass = item.status === "held" ? "hold" : item.status === "failed" ? "failed" : item.warning_text ? "warning" : "";
+    cell(row, detail, detailClass);
+  }
   const history = $("history"); history.replaceChildren();
   if (!state.history.length) { const row = history.insertRow(); const td = row.insertCell(); td.colSpan = 7; td.className = "empty"; td.textContent = "まだ処理履歴はありません。"; }
   for (const item of state.history.slice().reverse()) { const row = history.insertRow(); cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename); cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title); cell(row, `${Math.round(Number(item.confidence || 0) * 100)}%`); }
 }
-async function refresh() { try { render(await api("/api/state")); } catch (error) { $("local-status").textContent = error.message; } }
+async function refresh() { try { const state = await api("/api/state"); if (!document.activeElement?.matches("#candidates select")) render(state); } catch (error) { $("local-status").textContent = error.message; } }
 async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,format_template:$("format").value,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked})}); settingsDirty = false; lastServerSettings = null; if (refreshNow) await refresh(); }
 $("save").onclick = async () => { try { await saveSettings(); $("local-status").textContent = "設定を保存しました"; } catch (error) { $("local-status").textContent = error.message; } };
 $("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); const result = await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); $("local-status").textContent = result.message || (enabled ? "新しいPDFの自動監視を開始しました" : "自動監視を停止しました"); } catch (error) { $("local-status").textContent = error.message; } };
@@ -516,7 +573,7 @@ $("apply").onclick = async () => {
   if (!confirm(`${ids.length}件を確認済みとしてリネームしますか？`)) return;
   applyInProgress = true; $("apply").disabled = true;
   try {
-    const result = await api("/api/apply", {method:"POST", body:JSON.stringify({ids})});
+    const result = await api("/api/apply", {method:"POST", body:JSON.stringify({ids, translation_services: translationSelections()})});
     $("local-status").textContent = result.count ? `${result.count}件をリネームしました` : "実行可能な候補がありません。状態が「候補」の行を選択してください";
     await refresh();
   } catch (error) { $("local-status").textContent = error.message; }
@@ -617,7 +674,10 @@ class Handler(BaseHTTPRequestHandler):
                 ids = payload.get("ids", [])
                 if not isinstance(ids, list):
                     raise ValueError("idsは配列で指定してください")
-                result = {"count": self.state.apply([str(item) for item in ids])}
+                services = payload.get("translation_services", {})
+                if not isinstance(services, dict):
+                    raise ValueError("translation_servicesはオブジェクトで指定してください")
+                result = {"count": self.state.apply([str(item) for item in ids], services)}
             elif path == "/api/undo":
                 result = {"result": self.state.undo()}
             elif path == "/api/select-folder":
