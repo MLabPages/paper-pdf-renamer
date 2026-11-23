@@ -514,6 +514,17 @@ def _visible_doi(page_dicts: list[dict]) -> str | None:
     return candidates[0] if candidates else None
 
 
+def _cover_citation(cover: str) -> tuple[int, str, str] | None:
+    header = re.split(r"\n(?:[ \t]*\n)+", cover.strip(), maxsplit=1)[0]
+    citation = re.fullmatch(
+        r".+?\s+(\d+),\s*(\d+)\s*[-–—]\s*(\d+)\s*\((\d{4})\)", _clean(header) or ""
+    )
+    if citation:
+        volume, first_page, last_page, year = citation.groups()
+        return int(year), volume, f"{first_page}-{last_page}"
+    return None
+
+
 def _legacy_elsevier_cover(
     embedded_title: str | None, cover: str,
 ) -> tuple[str, str, tuple[str, ...], int, str, str] | None:
@@ -524,13 +535,13 @@ def _legacy_elsevier_cover(
     blocks = re.split(r"\n(?:[ \t]*\n)+", cover.strip(), maxsplit=3)
     if len(blocks) < 3:
         return None
-    citation = re.fullmatch(r".+?\s+(\d+),\s*(\d+)\s*[-–—]\s*(\d+)\s*\((\d{4})\)", _clean(blocks[0]) or "")
+    citation = _cover_citation(cover)
     title = _clean(blocks[1])
     author_line = blocks[2].splitlines()[0].strip()
     if not citation or not title or not _looks_like_title(title) or not _looks_like_author_line(author_line):
         return None
-    volume, first_page, last_page, year = citation.groups()
-    return f"10.1016/{pii[1].lower()}", title, _split_authors(author_line), int(year), volume, f"{first_page}-{last_page}"
+    year, volume, pages = citation
+    return f"10.1016/{pii[1].lower()}", title, _split_authors(author_line), year, volume, pages
 
 
 def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
@@ -615,4 +626,5 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
         pages=pages,
         doi_candidates=doi_candidates,
         pii_doi=pii_doi,
+        cover_citation=_cover_citation(cover),
     )

@@ -1,9 +1,11 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from paper_pdf_renamer.crossref import _author_match, _item_metadata, resolve_metadata
 from paper_pdf_renamer.models import LocalEvidence
+from paper_pdf_renamer.operations import RenameService
 
 
 class FakeCrossref:
@@ -92,6 +94,32 @@ def test_pii_requires_crossref_to_match_the_cover(overrides):
         assert result.safe_to_rename
         assert result.doi == doi
         assert result.source == "crossref:pii"
+
+
+@pytest.mark.parametrize("different_cover", [False, True])
+def test_compact_translation_filename_requires_matching_original(tmp_path, different_cover):
+    source = tmp_path / "al-LemonKumar2016-UnderstandingCustomerExperience.pdf"
+    original_path = tmp_path / "Lemon & Kumar (2016). - Understanding Customer Experience.pdf"
+    original_path.touch()
+    local = LocalEvidence(source, language="ja", cover_citation=(2016, "5", "1-9"))
+    original = LocalEvidence(
+        original_path, doi="10.5555/abc", title=ITEM["title"][0], authors=("Katherine Lemon",),
+        year=2016, language="en", cover_citation=(2016, "5", "2-9" if different_cover else "1-9"),
+    )
+    client = FakeCrossref(ITEM)
+    with patch("paper_pdf_renamer.crossref.extract_pdf", return_value=original) as read_original:
+        result = RenameService(
+            lambda _: resolve_metadata(local, client, FakeOpenAlex())
+        ).make_candidate(source)
+    read_original.assert_called_once_with(original_path)
+    assert result.status == "held"
+    if different_cover:
+        assert not result.translation_options
+        assert not client.lookups
+    else:
+        assert client.lookups == [("doi", "10.5555/abc")]
+        assert result.metadata.source == "local:original"
+        assert result.translation_options["DeepL"].startswith("[ja] [DeepL] Lemon & Kumar")
 
 
 def test_crossref_subtitle_is_kept_for_full_filename_title():

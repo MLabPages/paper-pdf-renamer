@@ -4,12 +4,14 @@ import json
 import re
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from difflib import SequenceMatcher
 from typing import Any
 
 from .models import LocalEvidence, ResolvedMetadata
 from .pdf_extract import (
     detect_language,
+    extract_pdf,
     normalize_doi,
     normalize_language,
     strip_translation_marker,
@@ -198,6 +200,43 @@ def _filename_evidence(evidence: LocalEvidence) -> tuple[str | None, int | None]
     return author, int(year_match.group(0)[1:-1]) if year_match else None
 
 
+def _compact_filename(value: str) -> str:
+    return "".join(char for char in value.casefold() if char.isalnum())
+
+
+def _resolve_from_original(
+    evidence: LocalEvidence, client: CrossrefClient, openalex_client: OpenAlexClient,
+) -> ResolvedMetadata | None:
+    if evidence.language != "ja" or not evidence.cover_citation:
+        return None
+    year, _, _ = evidence.cover_citation
+    stem = _compact_filename(re.sub(r"^al-", "", strip_translation_marker(evidence.path.stem), flags=re.I))
+    if str(year) not in stem:
+        return None
+    try:
+        siblings = [
+            path for path in evidence.path.parent.iterdir()
+            if path != evidence.path and path.suffix.casefold() == ".pdf"
+            and _compact_filename(path.stem) == stem and path.is_file()
+        ]
+        if len(siblings) != 1:
+            return None
+        original = extract_pdf(siblings[0])
+    except OSError:
+        return None
+    if original.language != "en" or original.cover_citation != evidence.cover_citation:
+        return None
+    metadata = resolve_metadata(original, client, openalex_client)
+    if not (metadata.safe_to_rename and metadata.doi and metadata.title and metadata.year == year):
+        return None
+    authors = _compact_filename("".join(metadata.authors))
+    if not authors or stem != authors + str(year) + _compact_filename(metadata.title):
+        return None
+    return replace(
+        metadata, local=evidence, source="local:original", translated=True, document_language="ja",
+    )
+
+
 def resolve_metadata(
     evidence: LocalEvidence,
     client: CrossrefClient | None = None,
@@ -211,6 +250,11 @@ def resolve_metadata(
     warnings: list[str] = []
     query_dois = evidence.doi_candidates or ((evidence.doi,) if evidence.doi else ())
     lookup_errors: list[str] = []
+
+    if not query_dois and not evidence.pii_doi:
+        translated = _resolve_from_original(evidence, client, openalex_client)
+        if translated is not None:
+            return translated
 
     if query_dois:
         doi_items: list[dict[str, Any]] = []

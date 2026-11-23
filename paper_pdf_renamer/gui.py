@@ -49,7 +49,7 @@ REASON_LABELS = {
     "already-correct-name": "すでに候補名です",
     "source-file-missing": "別の処理で先に変更された可能性があります",
     "added-while-stopped": "監視停止中に追加されたPDFです。確認後に実行してください",
-    "choose-translation-service": "同じ論文の日本語訳があります。今回の翻訳サービスを選んでください",
+    "choose-translation-service": "今回の翻訳サービスを選び、変更後のファイル名を確認してください",
 }
 WARNING_LABELS = {
     "author-mismatch": "著者は補助照合で不一致ですが、DOI・タイトル等を優先しました",

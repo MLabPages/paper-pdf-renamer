@@ -181,7 +181,7 @@ class RenameService:
             for service in TRANSLATION_SERVICES
         }
         stems = {path.stem.casefold() for path in (destination, *tagged.values())}
-        siblings = any(
+        siblings = metadata.source == "local:original" or any(
             path.suffix.casefold() == ".pdf"
             and path.name.casefold() != source.name.casefold()
             and re.sub(r" \([0-9]+\)$", "", path.stem.casefold()) in stems
