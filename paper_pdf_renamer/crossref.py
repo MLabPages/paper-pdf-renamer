@@ -225,8 +225,33 @@ def resolve_metadata(
             item = max(doi_items, key=lambda candidate: _candidate_rank(evidence, candidate))
             source = "crossref:doi"
 
+    pii_mismatch = False
+    if not query_dois and evidence.pii_doi:
+        try:
+            candidate = client.lookup_doi(evidence.pii_doi)
+            if candidate:
+                data = _item_metadata(candidate)
+                pages = re.findall(r"\d+", data["pages"] or "")
+                if (
+                    data["doi"] == evidence.pii_doi
+                    and evidence.year == data["year"]
+                    and evidence.volume == data["volume"]
+                    and len(pages) == 2 and "-".join(pages) == evidence.pages
+                    and title_similarity(evidence.title, data["title"]) >= 0.95
+                    and evidence.first_author
+                    and data["authors"]
+                    and _family(evidence.first_author) == _family(data["authors"][0])
+                ):
+                    item = candidate
+                    source = "crossref:pii"
+                else:
+                    pii_mismatch = True
+                    reasons.append("pii-metadata-mismatch")
+        except Exception as exc:
+            lookup_errors.append(f"crossref-lookup-failed:{type(exc).__name__}")
+
     title_search_low = False
-    if item is None and evidence.title:
+    if item is None and evidence.title and not pii_mismatch:
         try:
             results = client.search_title(evidence.title)
             ranked = sorted(results, key=lambda candidate: _candidate_rank(evidence, candidate), reverse=True)
@@ -241,7 +266,7 @@ def resolve_metadata(
         except Exception as exc:
             lookup_errors.append(f"crossref-search-failed:{type(exc).__name__}")
 
-    if item is None and evidence.title:
+    if item is None and evidence.title and not pii_mismatch:
         try:
             openalex_results = openalex_client.search_title(evidence.title)
             ranked_openalex = sorted(

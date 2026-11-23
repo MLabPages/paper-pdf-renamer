@@ -3,6 +3,7 @@ from pathlib import Path
 from paper_pdf_renamer.pdf_extract import (
     _extract_bibliographic_hints,
     _guess_title_and_authors,
+    _legacy_elsevier_cover,
     _layout_title,
     _visible_doi,
     detect_document_language,
@@ -10,6 +11,23 @@ from paper_pdf_renamer.pdf_extract import (
     has_translation_marker,
     normalize_doi,
 )
+
+
+def test_legacy_elsevier_cover_requires_explicit_pii_and_citation():
+    embedded = "PII: 0010-0285(75)90024-9"
+    cover = (
+        "COGNITIVE PSYCHOLOGY 7, 573-605 (1975)\n\n"
+        "Family Resemblances: Studies in the Internal\nStructure of Categories\n\n"
+        "ELEANOR ROSCH AND CAROLYN B. MERVIS\nUniversity of California, Berkeley\n\n"
+        "Six experiments explored the hypothesis."
+    )
+    assert _legacy_elsevier_cover(embedded, cover) == (
+        "10.1016/0010-0285(75)90024-9",
+        "Family Resemblances: Studies in the Internal Structure of Categories",
+        ("ELEANOR ROSCH", "CAROLYN B. MERVIS"), 1975, "7", "573-605",
+    )
+    assert _legacy_elsevier_cover(embedded.removeprefix("PII: "), cover) is None
+    assert _legacy_elsevier_cover(embedded, cover.replace("573-605", "573")) is None
 
 
 def test_normalize_doi():

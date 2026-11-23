@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from paper_pdf_renamer.crossref import _author_match, _item_metadata, resolve_metadata
 from paper_pdf_renamer.models import LocalEvidence
 
@@ -58,6 +60,38 @@ VOGES_ITEM = {
     "issued": {"date-parts": [[2026]]},
     "type": "proceedings-article",
 }
+
+
+@pytest.mark.parametrize("overrides", [
+    {},
+    {"DOI": "10.5555/other"},
+    {"volume": "8"},
+    {"page": "573-604"},
+    {"issued": {"date-parts": [[1976]]}},
+    {"author": [{"family": "Other"}]},
+    {"title": ["A different paper"]},
+])
+def test_pii_requires_crossref_to_match_the_cover(overrides):
+    doi = "10.1016/0010-0285(75)90024-9"
+    title = "Family Resemblances: Studies in the Internal Structure of Categories"
+    local = LocalEvidence(
+        Path("scan.pdf"), title=title, authors=("Eleanor Rosch", "Carolyn B. Mervis"),
+        year=1975, volume="7", pages="573-605", pii_doi=doi,
+    )
+    client = FakeCrossref({
+        **ITEM, "DOI": doi, "title": [title], "volume": "7", "page": "573–605",
+        "issued": {"date-parts": [[1975]]}, "author": [{"family": "Rosch"}, {"family": "Mervis"}],
+        **overrides,
+    })
+    result = resolve_metadata(local, client, FakeOpenAlex())
+    assert client.lookups == [("doi", doi)]
+    if overrides:
+        assert not result.safe_to_rename
+        assert "pii-metadata-mismatch" in result.reasons
+    else:
+        assert result.safe_to_rename
+        assert result.doi == doi
+        assert result.source == "crossref:pii"
 
 
 def test_crossref_subtitle_is_kept_for_full_filename_title():

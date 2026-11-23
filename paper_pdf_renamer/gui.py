@@ -33,6 +33,7 @@ from .watch_state import WatchManifest
 
 STATUS_LABELS = {"ready": "候補", "held": "要確認", "failed": "失敗", "renamed": "変更済み"}
 REASON_LABELS = {
+    "pii-metadata-mismatch": "出版社管理番号の書誌情報がPDF表紙と一致しません",
     "doi-missing": "DOIが見つかりません",
     "title-missing": "タイトルがありません",
     "author-missing": "著者がありません",

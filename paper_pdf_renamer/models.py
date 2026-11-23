@@ -22,6 +22,7 @@ class LocalEvidence:
     issue: str | None = None
     pages: str | None = None
     doi_candidates: tuple[str, ...] = ()
+    pii_doi: str | None = None
 
     @property
     def first_author(self) -> str | None:

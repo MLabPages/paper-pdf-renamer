@@ -514,6 +514,25 @@ def _visible_doi(page_dicts: list[dict]) -> str | None:
     return candidates[0] if candidates else None
 
 
+def _legacy_elsevier_cover(
+    embedded_title: str | None, cover: str,
+) -> tuple[str, str, tuple[str, ...], int, str, str] | None:
+    # Older Elsevier scans store an explicit print PII in /Title.
+    pii = re.fullmatch(r"PII:\s*(\d{4}-\d{3}[\dX]\(\d{2}\)\d{5}-[\dX])", embedded_title or "", re.I)
+    if not pii:
+        return None
+    blocks = re.split(r"\n(?:[ \t]*\n)+", cover.strip(), maxsplit=3)
+    if len(blocks) < 3:
+        return None
+    citation = re.fullmatch(r".+?\s+(\d+),\s*(\d+)\s*[-–—]\s*(\d+)\s*\((\d{4})\)", _clean(blocks[0]) or "")
+    title = _clean(blocks[1])
+    author_line = blocks[2].splitlines()[0].strip()
+    if not citation or not title or not _looks_like_title(title) or not _looks_like_author_line(author_line):
+        return None
+    volume, first_page, last_page, year = citation.groups()
+    return f"10.1016/{pii[1].lower()}", title, _split_authors(author_line), int(year), volume, f"{first_page}-{last_page}"
+
+
 def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
     """本文先頭3ページをローカル抽出し、DOI・タイトル・著者候補を得る。"""
 
@@ -527,6 +546,7 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
     embedded_title = embedded_author = None
     embedded_year: int | None = None
     text = ""
+    cover = ""
     page_dicts: list[dict] = []
     notes: list[str] = []
 
@@ -547,7 +567,10 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
                 year_match = re.search(r"(19|20)\d{2}", date or "")
                 embedded_year = int(year_match.group(0)) if year_match else None
                 for page in list(document)[:max_pages]:
-                    text += "\n" + page.get_text("text", sort=True)
+                    page_text = page.get_text("text", sort=True)
+                    if not page_dicts:
+                        cover = page_text
+                    text += "\n" + page_text
                     page_dict = page.get_text("dict", sort=True)
                     page_dicts.append(page_dict)
         except Exception as exc:  # malformed/encrypted PDFs remain safely held
@@ -569,9 +592,14 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
     if not title and not authors and not doi:
         notes.append("DOI・タイトル・著者候補を検出できませんでした")
     source = "pdf-embedded" if embedded_metadata_used else "pdf-layout" if page_dicts and title else "pdf-text" if text else "pdf-bytes"
+    volume, issue, pages = _extract_bibliographic_hints(text, pdf_path)
+    pii_doi = None
+    legacy_cover = _legacy_elsevier_cover(embedded_title, cover) if not doi else None
+    if legacy_cover:
+        pii_doi, title, authors, embedded_year, volume, pages = legacy_cover
+        source = "pdf-pii-cover"
     document_language = detect_document_language(text)
     language = document_language or normalize_language(detect_language(title, *authors))
-    volume, issue, pages = _extract_bibliographic_hints(text, pdf_path)
     return LocalEvidence(
         path=pdf_path,
         doi=doi,
@@ -586,4 +614,5 @@ def extract_pdf(path: str | Path, max_pages: int = 3) -> LocalEvidence:
         issue=issue,
         pages=pages,
         doi_candidates=doi_candidates,
+        pii_doi=pii_doi,
     )
