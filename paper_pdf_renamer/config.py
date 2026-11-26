@@ -79,10 +79,12 @@ class Settings:
     min_confidence: float = 0.90
     mailto: str = ""
     auto_start: bool = False
+    auto_translate: bool = False
     poll_interval: float = 5.0
     history_dir: str = field(default_factory=lambda: str(app_data_dir() / "history"))
 
     def validate(self) -> "Settings":
+        self.auto_translate = self.auto_translate is True
         self.watch_folders = [str(Path(folder)) for folder in self.watch_folders if str(folder).strip()]
         if not self.watch_folders:
             self.watch_folders = [default_downloads()]

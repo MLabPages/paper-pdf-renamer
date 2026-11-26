@@ -9,6 +9,7 @@ import socket
 import subprocess
 import threading
 import urllib.request
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,6 +21,7 @@ from .config import Settings, validate_format_template
 from .crossref import CrossrefClient, resolve_metadata
 from .desktop_window import DesktopWindow
 from .history import HistoryLog
+from .local_translation import save_translation, translate_pdf
 from .instance import SingleInstanceLock, clear_server_state, read_server_port, read_server_token, write_server_state
 from .http_security import request_error
 from .models import RenameCandidate
@@ -32,6 +34,13 @@ from .watch_state import WatchManifest
 
 
 STATUS_LABELS = {"ready": "候補", "held": "要確認", "failed": "失敗", "renamed": "変更済み"}
+
+
+def _file_identity(path: Path) -> tuple[int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
 REASON_LABELS = {
     "pii-metadata-mismatch": "出版社管理番号の書誌情報がPDF表紙と一致しません",
     "doi-missing": "DOIが見つかりません",
@@ -139,6 +148,9 @@ class AppState:
         self._watchers: list[tuple[PollingWatcher, threading.Event, threading.Thread]] = []
         self.monitoring = False
         self.message = "停止中"
+        self.translation_message = ""
+        self._translations = deque()
+        self._translation_worker = None
         self.show_window = lambda: None
 
     def _service(self) -> RenameService:
@@ -171,9 +183,11 @@ class AppState:
                     "min_confidence": self.settings.min_confidence,
                     "mailto": self.settings.mailto,
                     "auto_start": self.settings.auto_start,
+                    "auto_translate": self.settings.auto_translate,
                 },
                 "monitoring": self.monitoring,
                 "message": self.message,
+                "translation_message": self.translation_message,
                 "candidates": [_candidate_json(key, value) for key, value in self._candidates.items()],
                 "history": self.history.read()[-100:],
             }
@@ -190,6 +204,7 @@ class AppState:
             self.settings.min_confidence = float(payload.get("min_confidence", self.settings.min_confidence))
             self.settings.mailto = str(payload.get("mailto", self.settings.mailto)).strip()
             self.settings.auto_start = bool(payload.get("auto_start", self.settings.auto_start))
+            self.settings.auto_translate = payload.get("auto_translate", self.settings.auto_translate) is True
             self.settings.validate().save()
             startup_error: OSError | None = None
             if startup_is_supported():
@@ -308,7 +323,49 @@ class AppState:
                         watcher.mark_completed(result.source_path, result.destination_path)
             count = sum(result.status == "renamed" for result in results)
             self.message = f"{count}件を変更しました" if results else "実行可能な候補が選択されていません"
+            if self.settings.auto_translate:
+                for result in results:
+                    path = result.destination_path
+                    metadata = result.metadata
+                    if (result.status == "renamed" and path and not metadata.translated
+                            and not path.name.casefold().startswith("[ja]")
+                            and (metadata.document_language or metadata.language or "en").casefold().startswith("en")):
+                        self._translations.append(path)
+                if self._translations and self._translation_worker is None:
+                    self.translation_message = "PLaMo 0.8B の翻訳を準備中"
+                    self._translation_worker = threading.Thread(target=self._translate_pending, daemon=True)
+                    self._translation_worker.start()
             return count
+
+    def _translate_pending(self) -> None:
+        while True:
+            with self._lock:
+                if not self._translations:
+                    self._translation_worker = None
+                    return
+                source = self._translations.popleft()
+                self.translation_message = f"翻訳中（残り {len(self._translations)} 件）: {source.name}"
+            destination = source.with_name("[ja] [PLaMo] " + source.name)
+            try:
+                if destination.exists():
+                    message = f"翻訳済みのPDFがあります: {destination.name}"
+                else:
+                    identity = _file_identity(source)
+                    pdf = translate_pdf(source)
+                    with self._lock:
+                        if not source.exists() or _file_identity(source) != identity:
+                            message = f"元のPDFが移動または変更されたため保存を見送りました: {source.name}"
+                        elif save_translation(destination, pdf):
+                            self.watch_manifest.complete(destination, destination)
+                            for watcher, _, _ in self._watchers:
+                                watcher.mark_completed(destination, destination)
+                            message = f"翻訳を保存しました: {destination.name}"
+                        else:
+                            message = f"翻訳済みのPDFがあります: {destination.name}"
+            except Exception as exc:
+                message = f"翻訳できませんでした: {source.name} — {exc}"
+            with self._lock:
+                self.translation_message = message
 
     def undo(self) -> dict[str, Any]:
         with self._lock:
@@ -452,6 +509,9 @@ tr:last-child td { border-bottom: 0; }
 <label for="confidence">自動変更の信頼度基準（0.90以上）</label><input id="confidence" type="number" min="0.90" max="1" step="0.01">
 <label for="mailto">Crossref連絡先（任意）</label><input id="mailto" type="text" placeholder="your-name@example.com">
 <div class="inline"><input id="auto-start" type="checkbox"><label for="auto-start">Windows起動時に自動起動</label></div>
+<div class="inline"><input id="auto-translate" type="checkbox"><label for="auto-translate">リネーム後に PLaMo 0.8B で翻訳</label></div>
+<p class="help">MLab論文リーダーを起動しておくと、確定した英語の原文PDFをPC内で翻訳し、同じフォルダに日本語訳を保存します。参考文献は原文のままです。</p>
+<p id="translation-status" class="status-line" role="status"></p>
 <div class="actions"><button id="save">設定を保存（必須）</button><button id="scan" class="secondary">既存PDFをスキャン（変更なし）</button><button id="scan-folder" class="secondary">選んだフォルダだけスキャン（変更なし）</button><button id="reformat" class="secondary">履歴から再整理／要確認を再スキャン（変更なし）</button><button id="undo" class="secondary">直近をUndo</button></div>
 <p class="help">「選んだフォルダだけスキャン」は、監視対象フォルダを変えずにその場で選んだ1フォルダだけを確認します。監視対象が大きいときや、特定のフォルダだけ整理したいときに使ってください。上の「サブフォルダも監視」がONなら、その下のフォルダも見ます。</p>
 <p class="status-line" id="local-status"></p>
@@ -484,7 +544,7 @@ async function api(url, options={}) {
   return data;
 }
 function cell(row, value, className="") { const td = document.createElement("td"); td.textContent = value ?? "—"; if (className) td.className = className; row.appendChild(td); return td; }
-function formSettingsSnapshot() { return {folders:$("folders").value,recursive:$("recursive").checked,format:$("format").value,maxTitle:$("max-title").value,confidence:$("confidence").value,mailto:$("mailto").value,autoStart:$("auto-start").checked}; }
+function formSettingsSnapshot() { return {folders:$("folders").value,recursive:$("recursive").checked,format:$("format").value,maxTitle:$("max-title").value,confidence:$("confidence").value,mailto:$("mailto").value,autoStart:$("auto-start").checked,autoTranslate:$("auto-translate").checked}; }
 function selectedCandidateIds() { return new Set([...document.querySelectorAll("#candidates input[type=checkbox]:checked")].map((input) => input.dataset.id)); }
 function translationSelections() {
   return Object.fromEntries([...$("candidates").querySelectorAll("select")].map(select => [select.dataset.id, select.value]));
@@ -497,8 +557,11 @@ function render(state) {
   if (!userChanged) {
     $("folders").value = s.watch_folders.join("\n"); $("recursive").checked = s.recursive; $("format").value = s.format_template;
     $("max-title").value = s.max_title_length; $("confidence").value = Number(s.min_confidence).toFixed(2); $("mailto").value = s.mailto || ""; $("auto-start").checked = s.auto_start;
+    $("auto-translate").checked = s.auto_translate;
   }
-  lastServerSettings = {folders:s.watch_folders.join("\n"),recursive:s.recursive,format:s.format_template,maxTitle:String(s.max_title_length),confidence:Number(s.min_confidence).toFixed(2),mailto:s.mailto || "",autoStart:s.auto_start};
+  lastServerSettings = {folders:s.watch_folders.join("\n"),recursive:s.recursive,format:s.format_template,maxTitle:String(s.max_title_length),confidence:Number(s.min_confidence).toFixed(2),mailto:s.mailto || "",autoStart:s.auto_start,autoTranslate:s.auto_translate};
+  const translationStatus = $("translation-status");
+  if (translationStatus.textContent !== state.translation_message) translationStatus.textContent = state.translation_message || "";
   $("monitor").checked = state.monitoring;
   const badge = $("monitor-badge"); badge.textContent = state.monitoring ? "監視中" : "停止中"; badge.className = state.monitoring ? "badge on" : "badge";
   $("message").textContent = state.message || "";
@@ -547,7 +610,7 @@ function render(state) {
   for (const item of state.history.slice().reverse()) { const row = history.insertRow(); cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename); cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title); cell(row, `${Math.round(Number(item.confidence || 0) * 100)}%`); }
 }
 async function refresh() { try { const state = await api("/api/state"); if (!document.activeElement?.matches("#candidates select")) render(state); } catch (error) { $("local-status").textContent = error.message; } }
-async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,format_template:$("format").value,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked})}); settingsDirty = false; lastServerSettings = null; if (refreshNow) await refresh(); }
+async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,format_template:$("format").value,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked,auto_translate:$("auto-translate").checked})}); settingsDirty = false; lastServerSettings = null; if (refreshNow) await refresh(); }
 $("save").onclick = async () => { try { await saveSettings(); $("local-status").textContent = "設定を保存しました"; } catch (error) { $("local-status").textContent = error.message; } };
 $("monitor").onchange = async () => { const enabled = $("monitor").checked; try { await saveSettings(false); const result = await api("/api/monitor", {method:"POST", body:JSON.stringify({enabled})}); await refresh(); $("local-status").textContent = result.message || (enabled ? "新しいPDFの自動監視を開始しました" : "自動監視を停止しました"); } catch (error) { $("local-status").textContent = error.message; } };
 $("scan").onclick = async () => { try { $("local-status").textContent = "スキャン中…（変更はまだ行いません）"; await saveSettings(); const result = await api("/api/scan", {method:"POST", body:"{}"}); $("local-status").textContent = `${result.count}件の候補を作成しました`; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
@@ -582,7 +645,7 @@ $("apply").onclick = async () => {
 };
 $("undo").onclick = async () => { if (!confirm("直近の成功したリネームを元に戻しますか？")) return; try { const result = await api("/api/undo", {method:"POST", body:"{}"}); $("local-status").textContent = result.result.status === "undone" ? "直近のリネームを元に戻しました" : "Undoできる履歴がありません"; await refresh(); } catch (error) { $("local-status").textContent = error.message; } };
 $("choose-folder").onclick = async () => { try { $("local-status").textContent = "フォルダ選択ダイアログを開いています…"; const result = await api("/api/select-folder", {method:"POST", body:"{}"}); if (!result.path) { $("local-status").textContent = "フォルダ選択をキャンセルしました"; return; } const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); if (!folders.some((folder) => folder.toLowerCase() === result.path.toLowerCase())) folders.push(result.path); $("folders").value = folders.join("\n"); settingsDirty = true; $("local-status").textContent = "フォルダを追加しました。設定を保存してください"; } catch (error) { $("local-status").textContent = error.message; } };
-for (const id of ["folders", "recursive", "format", "max-title", "confidence", "mailto", "auto-start"]) { $(id).addEventListener("input", () => { settingsDirty = true; }); $(id).addEventListener("change", () => { settingsDirty = true; }); }
+for (const id of ["folders", "recursive", "format", "max-title", "confidence", "mailto", "auto-start", "auto-translate"]) { $(id).addEventListener("input", () => { settingsDirty = true; }); $(id).addEventListener("change", () => { settingsDirty = true; }); }
 refresh(); setInterval(refresh, 2000);
 </script>
 </body>
