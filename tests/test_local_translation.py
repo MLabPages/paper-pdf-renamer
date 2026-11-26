@@ -57,3 +57,29 @@ def test_reader_uses_fixed_engine_and_fetches_translated_pdf(tmp_path):
     assert "engine=plamo-0.8b" in request.call_args_list[0].args[2]
     assert request.call_args_list[0].args[3] == b"%PDF-original"
     assert request.call_args.args[2] == f"/api/doc/{doc_id}/translated/plamo-0.8b"
+
+
+def test_history_can_translate_without_renaming_again(tmp_path):
+    state = AppState(Settings(history_dir=str(tmp_path / "logs")))
+    metadata = ResolvedMetadata("10.1234/example", "Safe Paper", ("Smith",), 2020, "en",
+                                "crossref:doi", 0.99)
+    service = RenameService(lambda _: metadata, history=state.history)
+    source = tmp_path / "download.pdf"
+    source.write_bytes(b"%PDF-original")
+    renamed = service.process(source).destination_path
+    row = state.snapshot()["history"][-1]
+    assert row["can_translate"]
+    with pytest.raises(ValueError):
+        state.translate_from_history(str(source), row["timestamp"])
+    with patch("paper_pdf_renamer.gui.translate_pdf", return_value=b"%PDF-translated"):
+        assert state.translate_from_history(str(renamed), row["timestamp"])
+        worker = state._translation_worker
+        if worker:
+            worker.join(5)
+    output = renamed.with_name("[ja] [PLaMo] " + renamed.name)
+    assert output.read_bytes() == b"%PDF-translated"
+    assert not state.snapshot()["history"][-1]["can_translate"]
+    assert not state.translate_from_history(str(renamed), row["timestamp"])
+    assert state.undo()["status"] == "undone"
+    with pytest.raises(ValueError):
+        state.translate_from_history(str(renamed), row["timestamp"])

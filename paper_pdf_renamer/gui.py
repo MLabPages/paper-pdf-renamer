@@ -41,6 +41,12 @@ def _file_identity(path: Path) -> tuple[int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
+def _translation_source(path: Path, metadata) -> bool:
+    return (path.suffix.casefold() == ".pdf" and not metadata.translated
+            and not path.name.casefold().startswith("[ja]")
+            and (metadata.document_language or metadata.language or "en").casefold().startswith("en"))
+
+
 REASON_LABELS = {
     "pii-metadata-mismatch": "出版社管理番号の書誌情報がPDF表紙と一致しません",
     "doi-missing": "DOIが見つかりません",
@@ -150,6 +156,7 @@ class AppState:
         self.message = "停止中"
         self.translation_message = ""
         self._translations = deque()
+        self._active_translation = None
         self._translation_worker = None
         self.show_window = lambda: None
 
@@ -173,6 +180,16 @@ class AppState:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            recent = self.history.read()[-100:]
+            available = {(row["new_path"], row["timestamp"]) for row in self.history.latest_successful_renames()}
+            for row in recent:
+                key = row.get("new_path"), row.get("timestamp")
+                if row.get("action") == "rename" and row.get("status") == "renamed" and key in available:
+                    path = Path(key[0])
+                    metadata = metadata_from_history(row)
+                    row["can_translate"] = (bool(metadata and _translation_source(path, metadata))
+                                            and path.is_file() and not self._translation_destination(path).exists()
+                                            and path not in self._translations and path != self._active_translation)
             return {
                 "settings": {
                     "watch_folders": self.settings.watch_folders,
@@ -189,7 +206,7 @@ class AppState:
                 "message": self.message,
                 "translation_message": self.translation_message,
                 "candidates": [_candidate_json(key, value) for key, value in self._candidates.items()],
-                "history": self.history.read()[-100:],
+                "history": recent,
             }
 
     def save_settings(self, payload: dict[str, Any]) -> None:
@@ -327,15 +344,38 @@ class AppState:
                 for result in results:
                     path = result.destination_path
                     metadata = result.metadata
-                    if (result.status == "renamed" and path and not metadata.translated
-                            and not path.name.casefold().startswith("[ja]")
-                            and (metadata.document_language or metadata.language or "en").casefold().startswith("en")):
-                        self._translations.append(path)
-                if self._translations and self._translation_worker is None:
-                    self.translation_message = "PLaMo 0.8B の翻訳を準備中"
-                    self._translation_worker = threading.Thread(target=self._translate_pending, daemon=True)
-                    self._translation_worker.start()
+                    if result.status == "renamed" and path and _translation_source(path, metadata):
+                        self._queue_translation(path)
             return count
+
+    @staticmethod
+    def _translation_destination(source: Path) -> Path:
+        return source.with_name("[ja] [PLaMo] " + source.name)
+
+    def _queue_translation(self, path: Path) -> bool:
+        if path == self._active_translation or path in self._translations:
+            return False
+        self._translations.append(path)
+        if self._translation_worker is None:
+            self.translation_message = "PLaMo 0.8B の翻訳を準備中"
+            self._translation_worker = threading.Thread(target=self._translate_pending, daemon=True)
+            self._translation_worker.start()
+        return True
+
+    def translate_from_history(self, new_path: str, timestamp: str) -> bool:
+        with self._lock:
+            for record in self.history.latest_successful_renames():
+                if (record["new_path"], record["timestamp"]) != (new_path, timestamp):
+                    continue
+                source = Path(record["new_path"])
+                metadata = metadata_from_history(record)
+                if not metadata or not _translation_source(source, metadata) or not source.is_file():
+                    break
+                if self._translation_destination(source).exists():
+                    self.translation_message = "同名の日本語訳がすでにあります"
+                    return False
+                return self._queue_translation(source)
+            raise ValueError("現在のリネーム履歴から翻訳できる原文PDFが見つかりません")
 
     def _translate_pending(self) -> None:
         while True:
@@ -344,8 +384,9 @@ class AppState:
                     self._translation_worker = None
                     return
                 source = self._translations.popleft()
+                self._active_translation = source
                 self.translation_message = f"翻訳中（残り {len(self._translations)} 件）: {source.name}"
-            destination = source.with_name("[ja] [PLaMo] " + source.name)
+            destination = self._translation_destination(source)
             try:
                 if destination.exists():
                     message = f"翻訳済みのPDFがあります: {destination.name}"
@@ -366,6 +407,7 @@ class AppState:
                 message = f"翻訳できませんでした: {source.name} — {exc}"
             with self._lock:
                 self.translation_message = message
+                self._active_translation = None
 
     def undo(self) -> dict[str, Any]:
         with self._lock:
@@ -524,7 +566,9 @@ tr:last-child td { border-bottom: 0; }
 </section>
 <section class="wide">
 <h2>処理履歴</h2>
-<div class="table-wrap"><table><thead><tr><th>日時</th><th>状態</th><th>元ファイル</th><th>新ファイル</th><th>DOI</th><th>タイトル</th><th>信頼度</th></tr></thead><tbody id="history"></tbody></table></div>
+<p class="help">MLab論文リーダーを起動し、履歴の「0.8Bで翻訳」を押すと、同じフォルダに日本語訳を保存します。</p>
+<p id="history-translation-status" class="status-line" role="status"></p>
+<div class="table-wrap"><table><thead><tr><th>日時</th><th>状態</th><th>元ファイル</th><th>新ファイル</th><th>DOI</th><th>タイトル</th><th>信頼度</th><th>翻訳</th></tr></thead><tbody id="history"></tbody></table></div>
 </section>
 </div>
 </main>
@@ -606,8 +650,29 @@ function render(state) {
     cell(row, detail, detailClass);
   }
   const history = $("history"); history.replaceChildren();
-  if (!state.history.length) { const row = history.insertRow(); const td = row.insertCell(); td.colSpan = 7; td.className = "empty"; td.textContent = "まだ処理履歴はありません。"; }
-  for (const item of state.history.slice().reverse()) { const row = history.insertRow(); cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename); cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title); cell(row, `${Math.round(Number(item.confidence || 0) * 100)}%`); }
+  const status = $("history-translation-status");
+  if (status.textContent !== state.translation_message) status.textContent = state.translation_message || "";
+  if (!state.history.length) { const row = history.insertRow(); const td = row.insertCell(); td.colSpan = 8; td.className = "empty"; td.textContent = "まだ処理履歴はありません。"; }
+  for (const item of state.history.slice().reverse()) {
+    const row = history.insertRow();
+    cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename);
+    cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title);
+    cell(row, Math.round(Number(item.confidence || 0) * 100) + "%");
+    const action = row.insertCell();
+    if (item.can_translate) {
+      const button = document.createElement("button");
+      button.className = "secondary";
+      button.textContent = "0.8Bで翻訳";
+      button.onclick = async () => {
+        button.disabled = true;
+        try {
+          await api("/api/translate-history", {method:"POST", body:JSON.stringify({new_path:item.new_path, timestamp:item.timestamp})});
+          await refresh();
+        } catch (error) { status.textContent = error.message; button.disabled = false; }
+      };
+      action.appendChild(button);
+    }
+  }
 }
 async function refresh() { try { const state = await api("/api/state"); if (!document.activeElement?.matches("#candidates select")) render(state); } catch (error) { $("local-status").textContent = error.message; } }
 async function saveSettings(refreshNow=true) { const folders = $("folders").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); await api("/api/settings", {method:"POST", body:JSON.stringify({watch_folders:folders,recursive:$("recursive").checked,format_template:$("format").value,max_title_length:Number($("max-title").value),min_confidence:Number($("confidence").value),mailto:$("mailto").value,auto_start:$("auto-start").checked,auto_translate:$("auto-translate").checked})}); settingsDirty = false; lastServerSettings = null; if (refreshNow) await refresh(); }
@@ -734,6 +799,8 @@ class Handler(BaseHTTPRequestHandler):
                 }
             elif path == "/api/reformat-history":
                 result = {"count": self.state.reformat_history()}
+            elif path == "/api/translate-history":
+                result = {"queued": self.state.translate_from_history(payload.get("new_path"), payload.get("timestamp"))}
             elif path == "/api/apply":
                 ids = payload.get("ids", [])
                 if not isinstance(ids, list):
