@@ -515,6 +515,15 @@ button:disabled { opacity: .55; cursor: default; }
 table { width: 100%; border-collapse: collapse; min-width: 760px; }
 th, td { text-align: left; padding: 8px 9px; border-bottom: 1px solid #e2e8f0; vertical-align: top; font-size: .86rem; }
 th { background: #f8fafc; white-space: nowrap; }
+.history-table { table-layout: fixed; min-width: 720px; }
+.history-table th, .history-table td { overflow-wrap: anywhere; }
+.history-table col.history-action { width: 112px; }
+.history-table col.history-time { width: 14%; }
+.history-table col.history-state { width: 10%; }
+.history-table col.history-source { width: 15%; }
+.history-table col.history-doi { width: 15%; }
+.history-table col.history-confidence { width: 64px; }
+.history-table button { white-space: nowrap; padding-inline: 8px; }
 tr:last-child td { border-bottom: 0; }
 .hold { color: #9a6700; }
 .warning { color: #9a6700; }
@@ -568,7 +577,13 @@ tr:last-child td { border-bottom: 0; }
 <h2>処理履歴</h2>
 <p class="help">MLab論文リーダーを起動し、履歴の「0.8Bで翻訳」を押すと、同じフォルダに日本語訳を保存します。</p>
 <p id="history-translation-status" class="status-line" role="status"></p>
-<div class="table-wrap"><table><thead><tr><th>日時</th><th>状態</th><th>元ファイル</th><th>新ファイル</th><th>DOI</th><th>タイトル</th><th>信頼度</th><th>翻訳</th></tr></thead><tbody id="history"></tbody></table></div>
+<div class="table-wrap">
+<table class="history-table">
+<colgroup><col class="history-action"><col class="history-time"><col class="history-state"><col class="history-source"><col><col class="history-doi"><col><col class="history-confidence"></colgroup>
+<thead><tr><th>翻訳</th><th>日時</th><th>状態</th><th>元ファイル</th><th>新ファイル</th><th>DOI</th><th>タイトル</th><th>信頼度</th></tr></thead>
+<tbody id="history"></tbody>
+</table>
+</div>
 </section>
 </div>
 </main>
@@ -655,10 +670,10 @@ function render(state) {
   if (!state.history.length) { const row = history.insertRow(); const td = row.insertCell(); td.colSpan = 8; td.className = "empty"; td.textContent = "まだ処理履歴はありません。"; }
   for (const item of state.history.slice().reverse()) {
     const row = history.insertRow();
+    const action = row.insertCell();
     cell(row, item.timestamp); cell(row, item.status || item.action); cell(row, item.original_filename);
     cell(row, item.new_filename); cell(row, item.doi); cell(row, item.title);
     cell(row, Math.round(Number(item.confidence || 0) * 100) + "%");
-    const action = row.insertCell();
     if (item.can_translate) {
       const button = document.createElement("button");
       button.className = "secondary";
